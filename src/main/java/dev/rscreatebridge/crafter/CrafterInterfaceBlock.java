@@ -26,5 +26,8 @@ public class CrafterInterfaceBlock extends BridgeBlock<CrafterInterfaceBlockEnti
         super.neighborChanged(state, level, pos, block, fromPos, isMoving);
         // The output capability depends on whether the neighbor is a crafter: tell the caches.
         level.invalidateCapabilities(pos);
+        if (level.getBlockEntity(pos) instanceof CrafterInterfaceBlockEntity be) {
+            be.invalidateGrid();
+        }
     }
 }

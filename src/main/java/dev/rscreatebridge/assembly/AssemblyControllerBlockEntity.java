@@ -530,7 +530,7 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
 
     private void dispatch() {
         final long now = now();
-        List<AssemblyPortBlockEntity> ports = null;
+        List<ReadyStation> ready = null;
         for (final Job job : List.copyOf(jobs)) {
             if (job.state != Job.State.WAITING_STATION || job.nextTryAt > now || job.holding.isEmpty()) {
                 continue;
@@ -546,13 +546,15 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
                 fail(job, Component.translatable("rscreatebridge.assembly.problem.no_recipe"));
                 continue;
             }
-            if (ports == null) {
-                ports = ports();
+            if (ready == null) {
+                ready = readyStations(now);
             }
-            final AssemblyPortBlockEntity port = choosePort(ports, op, recipe.productName(), now);
-            if (port == null) {
+            final ReadyStation station = choosePort(ready, op, recipe.productName());
+            if (station == null) {
                 continue;
             }
+            ready.remove(station); // one job per station
+            final AssemblyPortBlockEntity port = station.port();
             if (!prepareMachine(port, op)) {
                 job.nextTryAt = now + MATERIAL_RETRY_TICKS / 5;
                 continue;
@@ -572,29 +574,49 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         }
     }
 
+    /** A station that can take a job right now, with what dispatching needs to know about it. */
+    private record ReadyStation(AssemblyPortBlockEntity port, MachineType machine,
+                                com.simibubi.create.content.processing.burner.BlazeBurnerBlock.HeatLevel heat) {
+    }
+
     /**
-     * A free, working, empty station for the operation, with enough heat. Prefers one whose machine already has
-     * what the operation needs loaded.
+     * Every free, working, empty station on the network. Checked once per dispatch (not once per waiting job),
+     * since these checks read blocks and inventories.
      */
-    @Nullable
-    private AssemblyPortBlockEntity choosePort(final List<AssemblyPortBlockEntity> ports, final Operation op,
-                                               final Component product, final long now) {
-        AssemblyPortBlockEntity best = null;
-        boolean heatMissing = false;
-        for (final AssemblyPortBlockEntity port : ports) {
-            if (port.machineType() != op.machine() || !port.isFreeFor(worldPosition, now) || isPortBusy(port)
-                || port.stationProblem() != null || !StationOps.isEmpty(port, op.machine().usesBasin())) {
+    private List<ReadyStation> readyStations(final long now) {
+        final List<ReadyStation> ready = new ArrayList<>();
+        for (final AssemblyPortBlockEntity port : ports()) {
+            final MachineType machine = port.machineType();
+            if (machine == null || !port.isFreeFor(worldPosition, now) || isPortBusy(port)
+                || port.stationProblem() != null || !StationOps.isEmpty(port, machine.usesBasin())) {
                 continue;
             }
-            if (!op.heat().testBlazeBurner(port.heat())) {
+            ready.add(new ReadyStation(port, machine, port.heat()));
+        }
+        return ready;
+    }
+
+    /**
+     * A ready station for the operation, with enough heat. Prefers one whose machine already has what the
+     * operation needs loaded.
+     */
+    @Nullable
+    private ReadyStation choosePort(final List<ReadyStation> ready, final Operation op, final Component product) {
+        ReadyStation best = null;
+        boolean heatMissing = false;
+        for (final ReadyStation station : ready) {
+            if (station.machine() != op.machine()) {
+                continue;
+            }
+            if (!op.heat().testBlazeBurner(station.heat())) {
                 heatMissing = true;
                 continue;
             }
-            if (isAlreadyLoaded(port, op)) {
-                return port;
+            if (isAlreadyLoaded(station.port(), op)) {
+                return station;
             }
             if (best == null) {
-                best = port;
+                best = station;
             }
         }
         if (best == null && heatMissing) {

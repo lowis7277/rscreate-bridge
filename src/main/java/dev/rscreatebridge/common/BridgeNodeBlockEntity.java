@@ -92,8 +92,12 @@ public abstract class BridgeNodeBlockEntity extends AbstractNetworkNodeContainer
     /** Copy of describe() sent to the client for the Goggles overlay. */
     private List<Component> goggleLines = List.of();
 
+    /** Players farther than this can't see the block, so its Goggles text isn't refreshed for them. */
+    private static final double GOGGLE_RANGE = 32;
+
     private void syncGoggleLines() {
-        if (level == null || level.isClientSide()) {
+        if (level == null || level.isClientSide() || !level.hasNearbyAlivePlayer(
+            worldPosition.getX() + 0.5, worldPosition.getY() + 0.5, worldPosition.getZ() + 0.5, GOGGLE_RANGE)) {
             return;
         }
         final List<Component> lines = describe();
@@ -119,6 +123,10 @@ public abstract class BridgeNodeBlockEntity extends AbstractNetworkNodeContainer
     @Override
     public CompoundTag getUpdateTag(final HolderLookup.Provider registries) {
         final CompoundTag tag = super.getUpdateTag(registries);
+        if (level != null && !level.isClientSide()) {
+            // Sent when a player loads the chunk: make sure the text is current even if nobody was nearby.
+            goggleLines = List.copyOf(describe());
+        }
         final ListTag lines = new ListTag();
         for (final Component line : goggleLines) {
             lines.add(StringTag.valueOf(Component.Serializer.toJson(line, registries)));

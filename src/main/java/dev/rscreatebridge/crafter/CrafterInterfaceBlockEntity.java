@@ -158,7 +158,28 @@ public class CrafterInterfaceBlockEntity extends BridgeNodeBlockEntity {
         }
     }
 
-    /** For RS's "block until empty" mode. */
+    /** How long a scanned crafter array is reused by the status checks below (accepting a craft always rescans). */
+    private static final int GRID_CACHE_TICKS = 20;
+    @Nullable
+    private CrafterGrid.Discovery cachedGrid;
+    private long cachedGridAt;
+
+    /** The crafter array, scanned at most once per {@link #GRID_CACHE_TICKS} for status checks. */
+    private CrafterGrid.Discovery cachedDiscovery() {
+        final long now = level.getGameTime();
+        if (cachedGrid == null || now - cachedGridAt >= GRID_CACHE_TICKS) {
+            cachedGrid = CrafterGrid.discover(level, worldPosition);
+            cachedGridAt = now;
+        }
+        return cachedGrid;
+    }
+
+    /** A neighbor changed: the array may be different, scan it again next time. */
+    public void invalidateGrid() {
+        cachedGrid = null;
+    }
+
+    /** For RS's "block until empty" mode. RS may ask often, so the array scan is reused for a moment. */
     public boolean isEmptyForRs() {
         if (pendingStart || activeKit != null || retryPending) {
             return false;
@@ -166,7 +187,7 @@ public class CrafterInterfaceBlockEntity extends BridgeNodeBlockEntity {
         if (level == null) {
             return true;
         }
-        final CrafterGrid.Discovery discovery = CrafterGrid.discover(level, worldPosition);
+        final CrafterGrid.Discovery discovery = cachedDiscovery();
         return !(discovery instanceof CrafterGrid.Found found) || !found.grid().anyItemPresent();
     }
 
@@ -412,7 +433,7 @@ public class CrafterInterfaceBlockEntity extends BridgeNodeBlockEntity {
         lines.add(Component.translatable("block.rscreatebridge.crafter_interface").withStyle(ChatFormatting.GOLD));
         lines.add(describeNetwork());
         if (level != null) {
-            final CrafterGrid.Discovery discovery = CrafterGrid.discover(level, worldPosition);
+            final CrafterGrid.Discovery discovery = cachedDiscovery();
             if (discovery instanceof CrafterGrid.Found found) {
                 final CrafterGrid grid = found.grid();
                 lines.add(Component.translatable("rscreatebridge.crafter.info.grid", grid.size(), grid.width(),

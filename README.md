@@ -73,15 +73,8 @@ energy usage of each block. The mod has no commands.
 English and Spanish (Argentina, Spain, Mexico).
 
 ## Building
-Requires JDK 21. Create, Refined Storage and JEI are compiled against local jars that have to be copied to `libs/`:
-```
-libs/refinedstorage-neoforge-2.0.9.jar
-libs/create-1.21.1-6.0.10.jar
-libs/jei-1.21.1-neoforge-19.64.0.455.jar
-libs/nested/flywheel-neoforge-1.21.1-1.0.6.jar        (bundled inside the Create jar, in META-INF/jarjar)
-libs/nested/ponder-neoforge-1.0.82+mc1.21.1.jar
-libs/nested/Registrate-MC1.21-1.3.0+67.jar
-```
+Requires JDK 21. Create, Refined Storage and JEI are downloaded from Maven (the Modrinth release jars), so no extra
+setup is needed:
 ```bash
 ./gradlew build
 ```

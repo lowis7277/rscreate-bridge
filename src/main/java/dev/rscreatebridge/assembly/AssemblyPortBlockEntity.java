@@ -352,6 +352,12 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
         return claimedBy == null || claimedBy.equals(controller) || now - claimRefreshed > CLAIM_TTL_TICKS;
     }
 
+    /** The controller currently using this port, or null. */
+    @Nullable
+    public BlockPos claimedBy() {
+        return claimedBy;
+    }
+
     public void claim(final BlockPos controller, final long now) {
         claimedBy = controller;
         claimRefreshed = now;

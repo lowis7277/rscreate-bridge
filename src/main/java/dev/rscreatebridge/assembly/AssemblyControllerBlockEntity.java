@@ -6,7 +6,6 @@ import com.refinedmods.refinedstorage.api.resource.ResourceAmount;
 import com.refinedmods.refinedstorage.api.resource.ResourceKey;
 import com.refinedmods.refinedstorage.common.support.resource.FluidResource;
 import com.refinedmods.refinedstorage.common.support.resource.ItemResource;
-import com.simibubi.create.AllDataComponents;
 
 import dev.rscreatebridge.Config;
 import dev.rscreatebridge.RSCreateBridge;
@@ -21,13 +20,14 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.function.Predicate;
 
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.NbtUtils;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -40,73 +40,58 @@ import net.neoforged.neoforge.items.IItemHandler;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Assembly Controller: receives from the Autocrafter everything the pattern asks for (base item,
- * cogwheels, nuggets, lava...) and builds the piece step by step using the Assembly Ports on its
- * own RS network.
+ * Assembly Controller: receives from the Autocrafter everything the pattern asks for and makes the product
+ * with the Assembly Ports on its own RS network.
  * <p>
- * For each step it looks for a free port whose machine has the right type (deployer, press or spout),
- * loads the machine (the deployer's held item, the spout's lava), places the piece on the depot and
- * takes it back once Create is done. A recipe that only uses the deployer only needs a deployer port.
- * With several ports of the same type, several pieces are built in parallel.
+ * Every product is a {@link Job}: a sequenced assembly piece (several depot steps), a single depot step
+ * (press, deployer or spout) or a basin kit (mixer or press over a basin). All of them go through the same
+ * cycle: pick a free station of the right type, load its machine if needed, place the inputs
+ * ({@link StationOps#place}), wait for Create ({@link StationOps#poll}) and sort the outputs:
  * <ul>
  *   <li>product: to the RS network (the request receives it, like with an Importer);</li>
- *   <li>scrap: to the network, and it retries with a new base item from the network (up to {@code maxRetries});</li>
- *   <li>when everything is done, leftover materials go back to the network.</li>
+ *   <li>intermediate (sequenced assembly): back to the queue for its next step;</li>
+ *   <li>scrap or lost inputs: start over from the job's start resources (up to {@code maxRetries}).</li>
  * </ul>
- * The controller and the ports expose no inventory: no double insertion with RS's generic sink.
+ * A station in an unloaded chunk pauses its job; a broken Port hands its inputs back. When there are no jobs
+ * left, leftover materials go back to the network. The controller and the ports expose no inventory, so
+ * RS's generic sink can't insert twice.
  */
 public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     private static final int TICK_INTERVAL = 2;
     private static final int MATERIAL_RETRY_TICKS = 100;
-    /** If the piece disappears from the depot (someone took it), wait this long before treating it as lost. */
+    /** If a station's inputs disappear (someone took them), wait this long before treating them as lost. */
     private static final int LOST_GRACE_TICKS = 40;
     private static final int PORT_COOLDOWN_TICKS = 200;
 
-    enum State {
-        /** The piece is in the controller, waiting for a free port of the right type. */
-        WAITING_PORT,
-        /** The piece is on a port's depot. */
-        AT_PORT,
-        /** After scrap or a lost piece: a new base item from the network is needed. */
-        WAITING_BASE
-    }
-
-    /** One piece to build (one product). */
-    static final class Job {
-        final ItemStack base;
-        final ResourceLocation recipe;
-        /** The piece (base or intermediate) while the controller holds it; on a depot, what was placed there. */
-        ItemStack piece;
-        State state = State.WAITING_PORT;
-        @Nullable
-        BlockPos port;
-        long sentAt;
-        long missingSince = -1;
-        long nextTryAt;
-        int attempts;
-
-        Job(final ItemStack base, final ResourceLocation recipe) {
-            this.base = base.copyWithCount(1);
-            this.recipe = recipe;
-            this.piece = this.base.copy();
-        }
-    }
+    /** Positions treated as unloaded; only used to simulate unloaded chunks in tests. */
+    @Nullable
+    private static Predicate<BlockPos> simulatedUnloaded;
 
     private final List<Job> jobs = new ArrayList<>();
     /** Materials the Autocrafter delivered for the steps (reserved by RS for the request). */
     private final Stock materials = new Stock();
-    /** To be returned to the network (product, scrap, leftovers). */
+    /** To be returned to the network (products, scrap, leftovers). */
     private final Stock returns = new Stock();
-    /** Mixer and basin press recipes. */
-    private final BasinJobs basinJobs = new BasinJobs(this);
+    @Nullable
+    private UUID abortRequestedBy;
+    private long abortRequestedAt;
     private int ticks;
 
     public AssemblyControllerBlockEntity(final BlockPos pos, final BlockState state) {
         super(Registration.ASSEMBLY_CONTROLLER_BE.get(), pos, state, Config.ASSEMBLY_CONTROLLER_ENERGY.getAsInt());
     }
 
+    /** Tests only: positions matching the predicate behave as if their chunk were unloaded. */
+    public static void simulateUnloadedStations(@Nullable final Predicate<BlockPos> unloaded) {
+        simulatedUnloaded = unloaded;
+    }
+
     private long now() {
         return level == null ? 0 : level.getGameTime();
+    }
+
+    private boolean isStationLoaded(final BlockPos pos) {
+        return level != null && level.isLoaded(pos) && (simulatedUnloaded == null || !simulatedUnloaded.test(pos));
     }
 
     private List<AssemblyPortBlockEntity> ports() {
@@ -114,7 +99,7 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     }
 
     @Nullable
-    AssemblyPortBlockEntity portAt(@Nullable final BlockPos pos) {
+    private AssemblyPortBlockEntity portAt(@Nullable final BlockPos pos) {
         if (pos == null || level == null || !level.isLoaded(pos)) {
             return null;
         }
@@ -131,67 +116,57 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             rejectStatus("rscreatebridge.status.no_network");
             return ExternalPatternSink.Result.REJECTED;
         }
-        // Candidates: sequenced and basin recipes matching what RS delivered. If there is more than one,
-        // the first one whose machines are on the network wins.
-        AssemblyRecipeInfo match = null;
-        AssemblyRecipeInfo.Split split = null;
-        BasinRecipeInfo basinMatch = null;
-        List<Stock> basinKits = null;
-        AssemblyRecipeInfo.StepType firstMissing = null;
+        // Candidates: sequenced, single-step and basin recipes matching what RS delivered. If there is more
+        // than one, the first one whose machines are on the network wins.
         final Set<AssemblyRecipeInfo.StepType> available = availableMachines();
-        for (final AssemblyRecipeInfo info : AssemblyRecipeInfo.all(level)) {
+        AssemblyRecipeInfo.StepType firstMissing = null;
+        final List<Job> created = new ArrayList<>();
+        Stock extras = null;
+        final List<AssemblyRecipeInfo> depotRecipes = new ArrayList<>(AssemblyRecipeInfo.all(level));
+        depotRecipes.addAll(AssemblyRecipeInfo.allSingleStep(level));
+        for (final AssemblyRecipeInfo info : depotRecipes) {
             if (!info.isSupported()) {
                 continue;
             }
-            final AssemblyRecipeInfo.Split candidate = info.split(resources);
-            if (candidate == null) {
+            final AssemblyRecipeInfo.Split split = info.split(resources);
+            if (split == null) {
                 continue;
             }
             final AssemblyRecipeInfo.StepType missing = missingMachine(info, available);
-            if (missing == null) {
-                match = info;
-                split = candidate;
-                break;
+            if (missing != null) {
+                firstMissing = firstMissing == null ? missing : firstMissing;
+                continue;
             }
-            if (firstMissing == null) {
-                firstMissing = missing;
+            final Job.Kind kind = info.isSingleStep() ? Job.Kind.SINGLE : Job.Kind.SEQUENCED;
+            for (final ResourceAmount base : split.bases().asList()) {
+                final Stock unit = new Stock();
+                unit.add(base.resource(), 1);
+                for (long i = 0; i < base.amount(); i++) {
+                    created.add(new Job(kind, info.id(), unit));
+                }
             }
+            extras = split.extras();
+            break;
         }
-        if (split == null) {
-            // Single-step depot recipes (for example copper ingot -> copper sheet with the press).
-            for (final AssemblyRecipeInfo info : AssemblyRecipeInfo.allSingleStep(level)) {
-                final AssemblyRecipeInfo.Split candidate = info.split(resources);
-                if (candidate == null) {
-                    continue;
-                }
-                final AssemblyRecipeInfo.StepType missing = missingMachine(info, available);
-                if (missing == null) {
-                    match = info;
-                    split = candidate;
-                    break;
-                }
-                if (firstMissing == null) {
-                    firstMissing = missing;
-                }
-            }
-        }
-        if (split == null) {
+        BasinRecipeInfo basin = null;
+        if (created.isEmpty()) {
             for (final BasinRecipeInfo info : BasinRecipeInfo.all(level)) {
                 final List<Stock> kits = info.split(resources);
                 if (kits == null) {
                     continue;
                 }
-                if (available.contains(info.type())) {
-                    basinMatch = info;
-                    basinKits = kits;
-                    break;
+                if (!available.contains(info.type())) {
+                    firstMissing = firstMissing == null ? info.type() : firstMissing;
+                    continue;
                 }
-                if (firstMissing == null) {
-                    firstMissing = info.type();
+                basin = info;
+                for (final Stock kit : kits) {
+                    created.add(new Job(Job.Kind.BASIN, info.id(), kit));
                 }
+                break;
             }
         }
-        if (split == null && basinKits == null) {
+        if (created.isEmpty()) {
             if (firstMissing != null) {
                 rejectStatus("rscreatebridge.assembly.problem.no_port", Component.translatable(firstMissing.machineKey()));
             } else {
@@ -199,43 +174,22 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             }
             return ExternalPatternSink.Result.REJECTED;
         }
-        if (basinKits != null) {
-            if (!heatAvailable(basinMatch)) {
-                rejectStatus("rscreatebridge.assembly.problem.no_heat", basinMatch.name(), basinMatch.heatName());
-                return ExternalPatternSink.Result.REJECTED;
-            }
-            if (jobs.size() + basinJobs.jobs.size() + basinKits.size() > Config.MAX_QUEUED_JOBS.getAsInt()) {
-                return ExternalPatternSink.Result.REJECTED;
-            }
-            if (action == Action.SIMULATE) {
-                return ExternalPatternSink.Result.ACCEPTED;
-            }
-            basinJobs.add(basinMatch, basinKits);
-            RSCreateBridge.LOGGER.debug("Controller {}: {} kit(s) of {} queued", worldPosition.toShortString(),
-                basinKits.size(), basinMatch.id());
-            if (isStatusProblem()) {
-                clearProblem();
-            }
-            setChanged();
-            return ExternalPatternSink.Result.ACCEPTED;
+        if (basin != null && !heatAvailable(basin)) {
+            rejectStatus("rscreatebridge.assembly.problem.no_heat", basin.name(), basin.heatName());
+            return ExternalPatternSink.Result.REJECTED;
         }
-        if (jobs.size() + basinJobs.jobs.size() + split.runs() > Config.MAX_QUEUED_JOBS.getAsInt()) {
+        if (jobs.size() + created.size() > Config.MAX_QUEUED_JOBS.getAsInt()) {
             return ExternalPatternSink.Result.REJECTED; // queue full: RS retries later
         }
         if (action == Action.SIMULATE) {
             return ExternalPatternSink.Result.ACCEPTED;
         }
-        for (final ResourceAmount extra : split.extras().asList()) {
-            materials.add(extra.resource(), extra.amount());
+        if (extras != null) {
+            materials.addAll(extras.asList());
         }
-        for (final ResourceAmount base : split.bases().asList()) {
-            final ItemStack unit = ((ItemResource) base.resource()).toItemStack(1);
-            for (long i = 0; i < base.amount(); i++) {
-                jobs.add(new Job(unit, match.id()));
-            }
-        }
-        RSCreateBridge.LOGGER.debug("Controller {}: {} piece(s) of {} queued", worldPosition.toShortString(),
-            split.runs(), match.describe());
+        jobs.addAll(created);
+        RSCreateBridge.LOGGER.debug("Controller {}: {} job(s) of {} queued", worldPosition.toShortString(),
+            created.size(), created.getFirst().recipe);
         if (isStatusProblem()) {
             clearProblem();
         }
@@ -279,24 +233,20 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
 
     /** A rejection reason is only shown while the controller is idle. */
     private void rejectStatus(final String key, final Object... args) {
-        if (jobs.isEmpty() && basinJobs.jobs.isEmpty()) {
+        if (jobs.isEmpty()) {
             setStatus(true, key, args);
         }
     }
 
     public boolean isEmptyForRs() {
-        return jobs.isEmpty() && basinJobs.jobs.isEmpty();
+        return jobs.isEmpty();
     }
-
-    @Nullable
-    private java.util.UUID abortRequestedBy;
-    private long abortRequestedAt;
 
     /**
      * First shift + click: remembers the request and returns false. If the same player repeats it within
      * {@code window} ticks, returns true (abort).
      */
-    public boolean confirmAbort(final java.util.UUID player, final long now, final long window) {
+    public boolean confirmAbort(final UUID player, final long now, final long window) {
         if (player.equals(abortRequestedBy) && now - abortRequestedAt <= window) {
             abortRequestedBy = null;
             return true;
@@ -306,72 +256,25 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         return false;
     }
 
-    /** How many jobs are queued (pieces and basin kits). */
+    /** How many jobs are queued. */
     public int pendingCount() {
-        return jobs.size() + basinJobs.jobs.size();
+        return jobs.size();
     }
 
-    /** How many pieces are currently on port depots (to see parallel work). */
+    /** How many jobs currently have their inputs at a station (to see parallel work). */
     public int piecesAtPorts() {
         int count = 0;
         for (final Job job : jobs) {
-            if (job.state == State.AT_PORT) {
+            if (job.state == Job.State.AT_STATION) {
                 count++;
             }
         }
-        return count + basinJobs.atPorts();
+        return count;
     }
 
     @Override
     protected boolean hasWork() {
-        return !isEmptyForRs();
-    }
-
-    // ------------------------------------------------------------------ for BasinJobs
-
-    List<AssemblyPortBlockEntity> workPorts() {
-        return ports();
-    }
-
-    /** Does the port hold a piece or kit from this controller? */
-    boolean isPortBusy(final AssemblyPortBlockEntity port) {
-        return busyHere(port) || basinJobs.busy(port);
-    }
-
-    void giveBack(final Stock stock) {
-        returns.addAll(stock.asList());
-    }
-
-    /** Takes exactly that kit from the network (all or nothing). */
-    boolean takeKitFromNetwork(final Stock kit) {
-        for (final ResourceAmount r : kit.asList()) {
-            if (extractFromNetwork(r.resource(), r.amount(), Action.SIMULATE) < r.amount()) {
-                return false;
-            }
-        }
-        for (final ResourceAmount r : kit.asList()) {
-            extractFromNetwork(r.resource(), r.amount(), Action.EXECUTE);
-        }
-        return true;
-    }
-
-    void basinStatus(final boolean problem, final String key, final Object... args) {
-        setStatus(problem, key, args);
-    }
-
-    void basinProgress() {
-        clearStuck();
-    }
-
-    void basinRetry(final Component reason, final int attempt, final int max) {
-        setStatusSilently(true, "rscreatebridge.assembly.problem.retry", reason, attempt, max);
-        logEvent(Component.translatable("rscreatebridge.assembly.problem.retry", reason, attempt, max));
-    }
-
-    void basinGaveUp(final Component name, final int attempts) {
-        setStatusSilently(true, "rscreatebridge.assembly.problem.gave_up", name, attempts);
-        announceEvent(Component.translatable("rscreatebridge.assembly.problem.gave_up", name, attempts));
-        setChanged();
+        return !jobs.isEmpty();
     }
 
     // ================================================================== tick
@@ -389,141 +292,83 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             return;
         }
         flushReturns();
-        watchPorts();
-        refillBases();
+        watchStations();
+        restartJobs();
         dispatch();
-        basinJobs.tick(now());
-        if (isEmptyForRs()) {
+        if (jobs.isEmpty()) {
             releaseMaterials();
         }
         updateWorkingStatus();
     }
 
-    // ------------------------------------------------------------------ pieces at the stations
+    // ------------------------------------------------------------------ jobs at the stations
 
-    private void watchPorts() {
+    private void watchStations() {
         final long now = now();
         for (final Job job : List.copyOf(jobs)) {
-            if (job.state != State.AT_PORT) {
+            if (job.state != Job.State.AT_STATION || job.port == null) {
+                continue;
+            }
+            if (!isStationLoaded(job.port)) {
+                // The station's chunk is unloaded: pause (and stop the clock) until it loads again.
+                job.sentAt += TICK_INTERVAL;
+                job.missingSince = -1;
                 continue;
             }
             final AssemblyPortBlockEntity port = portAt(job.port);
-            final IItemHandler depot = port == null ? null : port.depot();
-            if (port == null || depot == null) {
-                // The port or the depot is gone: the piece is considered lost if it doesn't show up.
-                pieceMissing(job, now, null);
+            if (port == null) {
+                inputsMissing(job, now, null);
                 continue;
             }
             port.claim(worldPosition, now);
-            final List<ItemStack> present = contents(depot);
-            if (present.isEmpty()) {
-                // Did the deployer grab it? (an empty-handed deployer picks up what's below it)
-                if (recoverFromDeployer(job, port)) {
-                    continue;
-                }
-                pieceMissing(job, now, port);
-                continue;
-            }
-            job.missingSince = -1;
-            if (present.size() == 1 && ItemStack.isSameItemSameComponents(present.getFirst(), job.piece)) {
-                // Not processed yet.
-                final long limit = Config.PIECE_TIMEOUT_SECONDS.getAsInt() * 20L;
-                if (now - job.sentAt > limit) {
-                    final ItemStack back = takeAll(depot);
-                    if (!back.isEmpty()) {
-                        job.piece = back.copyWithCount(1);
-                        if (back.getCount() > 1) {
-                            returns.addItem(back.copyWithCount(back.getCount() - 1));
-                        }
-                    }
-                    port.release(worldPosition);
-                    port.coolDown(now + PORT_COOLDOWN_TICKS,
-                        Component.translatable("rscreatebridge.port.problem.timeout", Config.PIECE_TIMEOUT_SECONDS.getAsInt()));
-                    setStatus(true, "rscreatebridge.assembly.problem.stuck", port.getBlockPos().toShortString());
-                    job.state = State.WAITING_PORT;
-                    job.port = null;
-                    setChanged();
-                }
-                continue;
-            }
-            // Create finished the step: take everything off the depot and sort it.
-            final List<ItemStack> taken = new ArrayList<>();
-            for (int slot = 0; slot < depot.getSlots(); slot++) {
-                final ItemStack stack = depot.getStackInSlot(slot);
-                if (!stack.isEmpty()) {
-                    final ItemStack out = depot.extractItem(slot, stack.getCount(), false);
-                    if (!out.isEmpty()) {
-                        taken.add(out);
+            final StationOps.Poll poll = StationOps.poll(port, job, held -> belongsTo(job, held));
+            switch (poll.status()) {
+                case WAITING -> {
+                    job.missingSince = -1;
+                    if (now - job.sentAt > Config.PIECE_TIMEOUT_SECONDS.getAsInt() * 20L) {
+                        timedOut(job, port, now);
                     }
                 }
+                case UNCHANGED -> {
+                    leaveStation(job, port);
+                    job.holding.addAll(toStock(poll).asList());
+                    job.state = Job.State.WAITING_STATION;
+                }
+                case DONE -> {
+                    leaveStation(job, port);
+                    port.clearPortProblem();
+                    outputs(job, poll.items(), poll.fluids());
+                }
+                case EMPTY -> inputsMissing(job, now, port);
             }
-            port.release(worldPosition);
-            port.clearPortProblem();
-            job.port = null;
-            stepDone(job, taken);
-            setChanged();
         }
     }
 
-    private static List<ItemStack> contents(final IItemHandler handler) {
-        final List<ItemStack> list = new ArrayList<>();
-        for (int slot = 0; slot < handler.getSlots(); slot++) {
-            final ItemStack stack = handler.getStackInSlot(slot);
-            if (!stack.isEmpty()) {
-                list.add(stack);
-            }
-        }
-        return list;
+    /** Does an item a deployer picked up belong to this job (intermediate or result of its recipe)? */
+    private boolean belongsTo(final Job job, final ItemStack held) {
+        final AssemblyRecipeInfo info = job.usesBasin() ? null : AssemblyRecipeInfo.byId(level, job.recipe);
+        return info != null && (info.isIntermediate(held) || info.isResult(held));
     }
 
-    private static ItemStack takeAll(final IItemHandler handler) {
-        ItemStack result = ItemStack.EMPTY;
-        for (int slot = 0; slot < handler.getSlots(); slot++) {
-            final ItemStack stack = handler.getStackInSlot(slot);
-            if (!stack.isEmpty() && result.isEmpty()) {
-                result = handler.extractItem(slot, stack.getCount(), false);
-            }
-        }
-        return result;
-    }
-
-    private boolean recoverFromDeployer(final Job job, final AssemblyPortBlockEntity port) {
-        final IItemHandler hand = port.deployer();
-        if (hand == null) {
-            return false;
-        }
-        final ItemStack held = hand.getStackInSlot(0);
-        if (held.isEmpty() || port.isLoadedItem(held)) {
-            return false;
-        }
-        final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
-        final boolean ours = ItemStack.isSameItemSameComponents(held, job.piece)
-            || (info != null && (info.isIntermediate(held) || info.isResult(held)));
-        if (!ours) {
-            return false;
-        }
-        final ItemStack back = hand.extractItem(0, held.getCount(), false);
-        if (back.isEmpty()) {
-            return false;
-        }
+    private void leaveStation(final Job job, final AssemblyPortBlockEntity port) {
         port.release(worldPosition);
         job.port = null;
         job.missingSince = -1;
-        if (ItemStack.isSameItemSameComponents(back, job.piece)) {
-            // It wasn't processed: back to the queue as is.
-            job.piece = back.copyWithCount(1);
-            if (back.getCount() > 1) {
-                returns.addItem(back.copyWithCount(back.getCount() - 1));
-            }
-            job.state = State.WAITING_PORT;
-        } else {
-            stepDone(job, List.of(back));
-        }
         setChanged();
-        return true;
     }
 
-    private void pieceMissing(final Job job, final long now, @Nullable final AssemblyPortBlockEntity port) {
+    /** The machine didn't process in time: take the inputs back and try another station. */
+    private void timedOut(final Job job, final AssemblyPortBlockEntity port, final long now) {
+        final Stock back = StationOps.takeBack(port, job);
+        leaveStation(job, port);
+        job.holding.addAll(back.asList());
+        port.coolDown(now + PORT_COOLDOWN_TICKS,
+            Component.translatable("rscreatebridge.port.problem.timeout", Config.PIECE_TIMEOUT_SECONDS.getAsInt()));
+        setStatus(true, "rscreatebridge.assembly.problem.stuck", port.getBlockPos().toShortString());
+        job.state = Job.State.WAITING_STATION;
+    }
+
+    private void inputsMissing(final Job job, final long now, @Nullable final AssemblyPortBlockEntity port) {
         if (job.missingSince < 0) {
             job.missingSince = now;
             return;
@@ -536,15 +381,53 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         }
         job.port = null;
         job.missingSince = -1;
-        fail(job, Component.translatable("rscreatebridge.assembly.problem.lost_piece"));
+        job.placed.clear();
+        fail(job, Component.translatable(job.usesBasin() ? "rscreatebridge.assembly.problem.lost_basin"
+            : "rscreatebridge.assembly.problem.lost_piece"));
     }
 
+    /**
+     * A Port is being broken (or picked up with a wrench) while one of our jobs is at its station: finish the
+     * step if Create already did it, otherwise take the inputs back so nothing is left behind.
+     */
+    public void portRemoved(final AssemblyPortBlockEntity port) {
+        for (final Job job : List.copyOf(jobs)) {
+            if (job.state != Job.State.AT_STATION || !port.getBlockPos().equals(job.port)) {
+                continue;
+            }
+            final StationOps.Poll poll = StationOps.poll(port, job, held -> belongsTo(job, held));
+            if (poll.status() == StationOps.Status.DONE) {
+                leaveStation(job, port);
+                outputs(job, poll.items(), poll.fluids());
+            } else {
+                final Stock back = poll.status() == StationOps.Status.UNCHANGED ? toStock(poll)
+                    : StationOps.takeBack(port, job);
+                leaveStation(job, port);
+                job.holding.addAll(back.asList());
+                job.state = job.holding.isEmpty() ? Job.State.WAITING_RESTART : Job.State.WAITING_STATION;
+            }
+        }
+        flushReturns();
+    }
+
+    private static Stock toStock(final StationOps.Poll poll) {
+        final Stock stock = new Stock();
+        for (final ItemStack stack : poll.items()) {
+            stock.addItem(stack);
+        }
+        stock.addAll(poll.fluids().asList());
+        return stock;
+    }
+
+    // ------------------------------------------------------------------ outputs
+
     /** Sorts what came out of a station. */
-    private void stepDone(final Job job, final List<ItemStack> taken) {
-        final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
-        if (info != null && info.isSingleStep()) {
-            // Single-step recipe: whatever came out of the machine is the result (including chance outputs).
-            for (final ItemStack stack : taken) {
+    private void outputs(final Job job, final List<ItemStack> items, final Stock fluids) {
+        returns.addAll(fluids.asList());
+        final AssemblyRecipeInfo info = job.usesBasin() ? null : AssemblyRecipeInfo.byId(level, job.recipe);
+        if (info == null || info.isSingleStep()) {
+            // Single step or basin: everything that came out is the result (including chance outputs).
+            for (final ItemStack stack : items) {
                 returns.addItem(stack);
             }
             jobs.remove(job);
@@ -554,19 +437,20 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         ItemStack next = ItemStack.EMPTY;
         boolean product = false;
         ItemStack scrap = ItemStack.EMPTY;
-        for (final ItemStack stack : taken) {
-            if (next.isEmpty() && info != null && info.isIntermediate(stack)) {
+        final ItemStack placed = job.placedPiece();
+        for (final ItemStack stack : items) {
+            if (next.isEmpty() && info.isIntermediate(stack)) {
                 next = stack.copyWithCount(1);
                 if (stack.getCount() > 1) {
                     returns.addItem(stack.copyWithCount(stack.getCount() - 1));
                 }
-            } else if (info != null && info.isMainOutput(stack)) {
+            } else if (info.isMainOutput(stack)) {
                 product = true;
                 returns.addItem(stack);
-            } else if (info != null && info.isResult(stack)) {
+            } else if (info.isResult(stack)) {
                 scrap = stack;
                 returns.addItem(stack);
-            } else if (next.isEmpty() && ItemStack.isSameItemSameComponents(stack, job.piece)) {
+            } else if (next.isEmpty() && ItemStack.isSameItemSameComponents(stack, placed)) {
                 next = stack.copyWithCount(1); // came back unchanged: retry the step
                 if (stack.getCount() > 1) {
                     returns.addItem(stack.copyWithCount(stack.getCount() - 1));
@@ -579,12 +463,12 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             jobs.remove(job);
             clearStuck();
             RSCreateBridge.LOGGER.debug("Controller {}: finished {}", worldPosition.toShortString(),
-                info == null ? job.recipe : info.mainOutput().getHoverName().getString());
+                info.mainOutput().getHoverName().getString());
             return;
         }
         if (!next.isEmpty()) {
-            job.piece = next;
-            job.state = State.WAITING_PORT;
+            job.setPiece(next);
+            job.state = Job.State.WAITING_STATION;
             clearStuck();
             return;
         }
@@ -598,14 +482,23 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         }
     }
 
+    private Component productName(final Job job) {
+        if (job.usesBasin()) {
+            final BasinRecipeInfo info = BasinRecipeInfo.byId(level, job.recipe);
+            return info != null ? info.name() : Component.literal(job.recipe.toString());
+        }
+        final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
+        return info != null ? info.mainOutput().getHoverName() : job.base().getHoverName();
+    }
+
     private void fail(final Job job, final Component reason) {
         job.attempts++;
         final int max = Config.MAX_RETRIES.getAsInt();
-        final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
-        final Component name = info != null ? info.mainOutput().getHoverName() : job.base.getHoverName();
         if (job.attempts > max) {
             jobs.remove(job);
+            returns.addAll(job.holding.asList());
             // The only message that goes to chat: the request is given up.
+            final Component name = productName(job);
             setStatusSilently(true, "rscreatebridge.assembly.problem.gave_up", name, job.attempts);
             announceEvent(Component.translatable("rscreatebridge.assembly.problem.gave_up", name, job.attempts));
             setChanged();
@@ -613,34 +506,55 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         }
         setStatusSilently(true, "rscreatebridge.assembly.problem.retry", reason, job.attempts, max);
         logEvent(Component.translatable("rscreatebridge.assembly.problem.retry", reason, job.attempts, max));
-        job.state = State.WAITING_BASE;
-        job.piece = ItemStack.EMPTY;
+        returns.addAll(job.holding.asList());
+        job.holding.clear();
+        job.state = Job.State.WAITING_RESTART;
         job.nextTryAt = now();
         setChanged();
     }
 
     // ------------------------------------------------------------------ retries
 
-    /** After scrap: a new base item (from the materials or from the network). */
-    private void refillBases() {
+    /** Jobs that start over take their start resources again (materials first, then the network). */
+    private void restartJobs() {
         final long now = now();
         for (final Job job : jobs) {
-            if (job.state != State.WAITING_BASE || job.nextTryAt > now) {
+            if (job.state != Job.State.WAITING_RESTART || job.nextTryAt > now) {
                 continue;
             }
-            ItemStack base = materials.takeItem(s -> ItemStack.isSameItemSameComponents(s, job.base), 1);
-            if (base.isEmpty() && extractFromNetwork(ItemResource.ofItemStack(job.base), 1, Action.EXECUTE) == 1) {
-                base = job.base.copy();
-            }
-            if (base.isEmpty()) {
+            if (!takeFromMaterialsOrNetwork(job.start)) {
                 job.nextTryAt = now + MATERIAL_RETRY_TICKS;
-                setStatus(true, "rscreatebridge.assembly.problem.missing_materials", job.base.getHoverName());
+                if (job.usesBasin()) {
+                    setStatus(true, "rscreatebridge.assembly.problem.missing_kit");
+                } else {
+                    setStatus(true, "rscreatebridge.assembly.problem.missing_materials", job.base().getHoverName());
+                }
                 continue;
             }
-            job.piece = base;
-            job.state = State.WAITING_PORT;
+            job.holding.clear();
+            job.holding.addAll(job.start.asList());
+            job.state = Job.State.WAITING_STATION;
             setChanged();
         }
+    }
+
+    /** Takes exactly those resources, from the request materials first and then the network (all or nothing). */
+    private boolean takeFromMaterialsOrNetwork(final Stock wanted) {
+        for (final ResourceAmount r : wanted.asList()) {
+            final long fromMaterials = Math.min(materials.get(r.resource()), r.amount());
+            final long rest = r.amount() - fromMaterials;
+            if (rest > 0 && extractFromNetwork(r.resource(), rest, Action.SIMULATE) < rest) {
+                return false;
+            }
+        }
+        for (final ResourceAmount r : wanted.asList()) {
+            final long fromMaterials = materials.remove(r.resource(), r.amount());
+            final long rest = r.amount() - fromMaterials;
+            if (rest > 0) {
+                extractFromNetwork(r.resource(), rest, Action.EXECUTE);
+            }
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------ dispatch
@@ -649,40 +563,46 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         final long now = now();
         List<AssemblyPortBlockEntity> ports = null;
         for (final Job job : List.copyOf(jobs)) {
-            if (job.state != State.WAITING_PORT || job.nextTryAt > now || job.piece.isEmpty()) {
+            if (job.state != Job.State.WAITING_STATION || job.nextTryAt > now || job.holding.isEmpty()) {
                 continue;
             }
-            final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
-            if (info == null || info.steps().isEmpty()) {
-                // The recipe disappeared (datapack reload): the piece goes back to the network and the request is closed.
-                returns.addItem(job.piece);
-                job.piece = ItemStack.EMPTY;
+            // What this job needs next: the machine type, plus the depot step or the basin recipe.
+            AssemblyRecipeInfo.Step step = null;
+            BasinRecipeInfo basin = null;
+            if (job.usesBasin()) {
+                basin = BasinRecipeInfo.byId(level, job.recipe);
+            } else {
+                final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
+                step = info == null || info.steps().isEmpty() ? null : info.nextStep(job.piece());
+            }
+            if (step == null && basin == null) {
+                // The recipe disappeared (datapack reload): its inputs go back to the network and the job ends.
+                returns.addAll(job.holding.asList());
+                job.holding.clear();
                 job.attempts = Integer.MAX_VALUE - 1;
                 fail(job, Component.translatable("rscreatebridge.assembly.problem.no_recipe"));
                 continue;
             }
-            final AssemblyRecipeInfo.Step step = info.nextStep(job.piece);
             if (ports == null) {
                 ports = ports();
             }
-            final AssemblyPortBlockEntity port = choosePort(ports, step, now);
+            final AssemblyRecipeInfo.StepType type = basin != null ? basin.type() : step.type();
+            final AssemblyPortBlockEntity port = choosePort(ports, type, step, basin, now);
             if (port == null) {
                 continue;
             }
-            if (!prepareMachine(port, step, job)) {
+            if (step != null && !prepareMachine(port, step)) {
                 job.nextTryAt = now + MATERIAL_RETRY_TICKS / 5;
                 continue;
             }
-            final IItemHandler depot = port.depot();
-            if (depot == null) {
-                continue;
-            }
-            final ItemStack rest = depot.insertItem(0, job.piece.copy(), false);
-            if (!rest.isEmpty()) {
+            if (!StationOps.place(port, job)) {
+                if (job.usesBasin()) {
+                    port.setPortStatus(true, Component.translatable("rscreatebridge.port.problem.cannot_load"));
+                }
                 continue;
             }
             port.claim(worldPosition, now);
-            job.state = State.AT_PORT;
+            job.state = Job.State.AT_STATION;
             job.port = port.getBlockPos();
             job.sentAt = now;
             job.missingSince = -1;
@@ -690,34 +610,50 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         }
     }
 
-    /** A free port with the right machine; prefers one that already has what's needed loaded. */
+    /**
+     * A free, working, empty station with the right machine. For a depot step it prefers one that already has
+     * what is needed loaded; for a basin recipe the station needs enough heat.
+     */
     @Nullable
     private AssemblyPortBlockEntity choosePort(final List<AssemblyPortBlockEntity> ports,
-                                               final AssemblyRecipeInfo.Step step, final long now) {
+                                               final AssemblyRecipeInfo.StepType type,
+                                               @Nullable final AssemblyRecipeInfo.Step step,
+                                               @Nullable final BasinRecipeInfo basin, final long now) {
         AssemblyPortBlockEntity best = null;
+        boolean heatMissing = false;
         for (final AssemblyPortBlockEntity port : ports) {
-            if (port.machineType() != step.type() || !port.isFreeFor(worldPosition, now) || isPortBusy(port)
-                || port.stationProblem() != null || !port.depotEmpty()) {
+            if (port.machineType() != type || !port.isFreeFor(worldPosition, now) || isPortBusy(port)
+                || port.stationProblem() != null || !StationOps.isEmpty(port, type.usesBasin())) {
                 continue;
             }
-            if (isAlreadyLoaded(port, step)) {
+            if (basin != null && !basin.heatOk(port.heat())) {
+                heatMissing = true;
+                continue;
+            }
+            if (step == null || isAlreadyLoaded(port, step)) {
                 return port;
             }
             if (best == null) {
                 best = port;
             }
         }
+        if (best == null && heatMissing) {
+            setStatus(true, "rscreatebridge.assembly.problem.no_heat", basin.name(), basin.heatName());
+        }
         return best;
     }
 
-    private boolean busyHere(final AssemblyPortBlockEntity port) {
+    /** Does the port hold inputs from one of this controller's jobs? */
+    private boolean isPortBusy(final AssemblyPortBlockEntity port) {
         for (final Job job : jobs) {
-            if (job.state == State.AT_PORT && port.getBlockPos().equals(job.port)) {
+            if (job.state == Job.State.AT_STATION && port.getBlockPos().equals(job.port)) {
                 return true;
             }
         }
         return false;
     }
+
+    // ------------------------------------------------------------------ machine loading (depot steps)
 
     private static boolean isAlreadyLoaded(final AssemblyPortBlockEntity port, final AssemblyRecipeInfo.Step step) {
         if (step.type() == AssemblyRecipeInfo.StepType.DEPLOYING && step.heldItem() != null) {
@@ -736,7 +672,7 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     }
 
     /** Gets the machine ready for the step. Returns false if material is missing (the warning stays). */
-    private boolean prepareMachine(final AssemblyPortBlockEntity port, final AssemblyRecipeInfo.Step step, final Job job) {
+    private boolean prepareMachine(final AssemblyPortBlockEntity port, final AssemblyRecipeInfo.Step step) {
         if (isAlreadyLoaded(port, step)) {
             return true;
         }
@@ -869,16 +805,14 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         if (materials.isEmpty()) {
             return;
         }
-        for (final ResourceAmount r : materials.asList()) {
-            returns.add(r.resource(), r.amount());
-        }
+        returns.addAll(materials.asList());
         materials.clear();
         flushReturns();
         setChanged();
     }
 
     private void updateWorkingStatus() {
-        if (isEmptyForRs()) {
+        if (jobs.isEmpty()) {
             if (!isStatusProblem()) {
                 setStatus(false, "rscreatebridge.status.idle");
             }
@@ -887,51 +821,33 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         if (isStatusProblem()) {
             return; // the warning stays visible (Goggles) until something moves forward
         }
-        int atPorts = 0;
-        for (final Job job : jobs) {
-            if (job.state == State.AT_PORT) {
-                atPorts++;
-            }
-        }
-        setStatus(false, "rscreatebridge.assembly.status.working", atPorts + basinJobs.atPorts(),
-            jobs.size() + basinJobs.jobs.size() - atPorts - basinJobs.atPorts());
+        final int atStations = piecesAtPorts();
+        setStatus(false, "rscreatebridge.assembly.status.working", atStations, jobs.size() - atStations);
     }
 
     // ================================================================== abort / break
 
     /**
-     * Returns the pieces (held ones and the ones on depots) and the materials to the network, and
-     * clears the queue. If the network refuses something and {@code dropLeftovers} is set, it is dropped in the world.
+     * Returns everything to the network: what the controller holds, the inputs at the stations and the
+     * materials, and clears the queue. If the network refuses something and {@code dropLeftovers} is set, it is
+     * dropped in the world.
      */
     public void abortAll(final boolean dropLeftovers) {
         if (level == null) {
             return;
         }
         for (final Job job : jobs) {
-            if (job.state == State.AT_PORT) {
+            returns.addAll(job.holding.asList());
+            if (job.state == Job.State.AT_STATION) {
                 final AssemblyPortBlockEntity port = portAt(job.port);
-                final IItemHandler depot = port == null ? null : port.depot();
-                if (depot != null) {
-                    for (final ItemStack stack : List.copyOf(contents(depot))) {
-                        if (ItemStack.isSameItemSameComponents(stack, job.piece)) {
-                            final ItemStack out = takeAll(depot);
-                            returns.addItem(out);
-                            break;
-                        }
-                    }
-                }
                 if (port != null) {
+                    returns.addAll(StationOps.takeBack(port, job).asList());
                     port.release(worldPosition);
                 }
-            } else if (!job.piece.isEmpty()) {
-                returns.addItem(job.piece);
             }
         }
         jobs.clear();
-        basinJobs.abortAll(returns);
-        for (final ResourceAmount r : materials.asList()) {
-            returns.add(r.resource(), r.amount());
-        }
+        returns.addAll(materials.asList());
         materials.clear();
         flushReturns();
         if (dropLeftovers && !returns.isEmpty()) {
@@ -985,26 +901,14 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
                     counts.getOrDefault(AssemblyRecipeInfo.StepType.COMPACTING, 0)).withStyle(ChatFormatting.GREEN));
             }
         }
-        int atPorts = 0;
-        int waiting = 0;
-        int noBase = 0;
-        for (final Job job : jobs) {
-            switch (job.state) {
-                case AT_PORT -> atPorts++;
-                case WAITING_PORT -> waiting++;
-                case WAITING_BASE -> noBase++;
+        if (!jobs.isEmpty()) {
+            final Map<Job.State, Integer> byState = new EnumMap<>(Job.State.class);
+            for (final Job job : jobs) {
+                byState.merge(job.state, 1, Integer::sum);
             }
-        }
-        for (final BasinJobs.Job job : basinJobs.jobs) {
-            switch (job.state) {
-                case AT_PORT -> atPorts++;
-                case WAITING_PORT -> waiting++;
-                case WAITING_MATERIALS -> noBase++;
-            }
-        }
-        if (!isEmptyForRs()) {
-            lines.add(Component.translatable("rscreatebridge.assembly.info.pieces", atPorts, waiting, noBase)
-                .withStyle(ChatFormatting.GRAY));
+            lines.add(Component.translatable("rscreatebridge.assembly.info.pieces",
+                byState.getOrDefault(Job.State.AT_STATION, 0), byState.getOrDefault(Job.State.WAITING_STATION, 0),
+                byState.getOrDefault(Job.State.WAITING_RESTART, 0)).withStyle(ChatFormatting.GRAY));
         }
         if (!materials.isEmpty()) {
             lines.add(Component.translatable("rscreatebridge.assembly.info.materials", materials.toString())
@@ -1027,23 +931,9 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         tag.put("Materials", materials.save(registries));
         final ListTag list = new ListTag();
         for (final Job job : jobs) {
-            final CompoundTag j = new CompoundTag();
-            j.put("Base", job.base.save(registries));
-            j.putString("Recipe", job.recipe.toString());
-            if (!job.piece.isEmpty()) {
-                j.put("Piece", job.piece.save(registries));
-            }
-            j.putString("State", job.state.name());
-            if (job.port != null) {
-                j.put("Port", NbtUtils.writeBlockPos(job.port));
-            }
-            j.putInt("Attempts", job.attempts);
-            j.putLong("SentAt", job.sentAt);
-            j.putLong("NextTryAt", job.nextTryAt);
-            list.add(j);
+            list.add(job.save(registries));
         }
         tag.put("Jobs", list);
-        tag.put("BasinJobs", basinJobs.save(registries));
     }
 
     @Override
@@ -1054,33 +944,46 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         jobs.clear();
         for (final Tag raw : tag.getList("Jobs", Tag.TAG_COMPOUND)) {
             final CompoundTag j = (CompoundTag) raw;
-            final ItemStack base = ItemStack.parseOptional(registries, j.getCompound("Base"));
-            final ResourceLocation recipe = ResourceLocation.tryParse(j.getString("Recipe"));
-            if (base.isEmpty() || recipe == null) {
-                continue;
+            final Job job = j.contains("Kind") ? Job.load(j, registries) : loadOldJob(j, registries, false);
+            if (job != null) {
+                jobs.add(job);
             }
-            final Job job = new Job(base, recipe);
-            job.piece = j.contains("Piece") ? ItemStack.parseOptional(registries, j.getCompound("Piece")) : ItemStack.EMPTY;
-            try {
-                job.state = State.valueOf(j.getString("State"));
-            } catch (final IllegalArgumentException e) {
-                // A job saved by an older version (belt based): what it held goes back to the network and it is redone
-                // from a new base item.
-                if (j.contains("Holding")) {
-                    returns.addItem(ItemStack.parseOptional(registries, j.getCompound("Holding")));
-                }
-                job.state = State.WAITING_BASE;
-                job.piece = ItemStack.EMPTY;
-            }
-            job.port = NbtUtils.readBlockPos(j, "Port").orElse(null);
-            if (job.state == State.AT_PORT && job.port == null) {
-                job.state = State.WAITING_BASE;
-            }
-            job.attempts = j.getInt("Attempts");
-            job.sentAt = j.getLong("SentAt");
-            job.nextTryAt = j.getLong("NextTryAt");
-            jobs.add(job);
         }
-        basinJobs.load(tag.getList("BasinJobs", Tag.TAG_COMPOUND), registries);
+        for (final Tag raw : tag.getList("BasinJobs", Tag.TAG_COMPOUND)) {
+            final Job job = loadOldJob((CompoundTag) raw, registries, true);
+            if (job != null) {
+                jobs.add(job);
+            }
+        }
+    }
+
+    /**
+     * Jobs saved by older versions: they start over from their start resources. Whatever the old job held goes
+     * back to the network first, so nothing is lost or duplicated.
+     */
+    @Nullable
+    private Job loadOldJob(final CompoundTag tag, final HolderLookup.Provider registries, final boolean basin) {
+        final ResourceLocation recipe = ResourceLocation.tryParse(tag.getString("Recipe"));
+        final Stock start = new Stock();
+        if (basin) {
+            start.load(tag.getList("Kit", Tag.TAG_COMPOUND), registries);
+            final Stock holding = new Stock();
+            holding.load(tag.getList("Holding", Tag.TAG_COMPOUND), registries);
+            returns.addAll(holding.asList());
+        } else {
+            start.addItem(ItemStack.parseOptional(registries, tag.getCompound("Base")).copyWithCount(1));
+            for (final String key : List.of("Piece", "Holding")) {
+                if (tag.contains(key)) {
+                    returns.addItem(ItemStack.parseOptional(registries, tag.getCompound(key)));
+                }
+            }
+        }
+        if (recipe == null || start.isEmpty()) {
+            return null;
+        }
+        final Job job = new Job(basin ? Job.Kind.BASIN : Job.Kind.SEQUENCED, recipe, start);
+        job.holding.clear();
+        job.state = Job.State.WAITING_RESTART;
+        return job;
     }
 }

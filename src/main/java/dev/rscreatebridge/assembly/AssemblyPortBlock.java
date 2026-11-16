@@ -76,4 +76,19 @@ public class AssemblyPortBlock extends BridgeBlock<AssemblyPortBlockEntity> {
     protected List<Component> describe(final AssemblyPortBlockEntity be) {
         return be.describe();
     }
+
+    /** Breaking (or picking up) a port in use hands the inputs at its station back to the controller. */
+    @Override
+    protected void onRemove(final BlockState state, final Level level, final BlockPos pos, final BlockState newState,
+                            final boolean movedByPiston) {
+        if (!state.is(newState.getBlock()) && !level.isClientSide()
+            && level.getBlockEntity(pos) instanceof AssemblyPortBlockEntity port) {
+            final BlockPos controller = port.claimedBy();
+            if (controller != null && level.isLoaded(controller)
+                && level.getBlockEntity(controller) instanceof AssemblyControllerBlockEntity be) {
+                be.portRemoved(port);
+            }
+        }
+        super.onRemove(state, level, pos, newState, movedByPiston);
+    }
 }

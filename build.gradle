@@ -48,16 +48,34 @@ configurations {
     runtimeClasspath.extendsFrom localRuntime
 }
 
-// Create, Refined Storage and JEI are compiled against local jars in libs/ (see README).
-dependencies {
-    compileOnly files("libs/refinedstorage-neoforge-${rs2_version}.jar")
-    compileOnly files("libs/create-${minecraft_version}-${create_version}.jar")
-    compileOnly fileTree(dir: 'libs/nested', include: '*.jar')
-    // JEI is optional: only used for the Pattern Grid "+" button on sequenced assembly recipes.
-    compileOnly files("libs/jei-${minecraft_version}-neoforge-19.64.0.455.jar")
+repositories {
+    // Flywheel and Ponder (used by Create)
+    maven { url = 'https://maven.createmod.net' }
+    // Registrate (used by Create)
+    maven { url = 'https://maven.ithundxr.dev/snapshots' }
+    // Release jars of Create, Refined Storage and JEI, exactly as published on Modrinth
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = 'Modrinth'
+                url = 'https://api.modrinth.com/maven'
+            }
+        }
+        filter { includeGroup 'maven.modrinth' }
+    }
+}
 
-    localRuntime files("libs/refinedstorage-neoforge-${rs2_version}.jar")
-    localRuntime files("libs/create-${minecraft_version}-${create_version}.jar")
+dependencies {
+    compileOnly "maven.modrinth:create:${create_version}+mc${minecraft_version}"
+    compileOnly "maven.modrinth:refined-storage:${rs2_version}"
+    compileOnly "dev.engine-room.flywheel:flywheel-neoforge-api-${minecraft_version}:${flywheel_version}"
+    compileOnly "net.createmod.ponder:ponder-neoforge:${ponder_version}+mc${minecraft_version}"
+    compileOnly "com.tterrag.registrate:Registrate:${registrate_version}"
+    // JEI is optional: only used for the Pattern Grid "+" button on sequenced assembly recipes.
+    compileOnly "maven.modrinth:jei:${jei_version}"
+
+    localRuntime "maven.modrinth:create:${create_version}+mc${minecraft_version}"
+    localRuntime "maven.modrinth:refined-storage:${rs2_version}"
 }
 
 var generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {

@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "SDS",
+    "PKP",
+    "STS"
+  ],
+  "key": {
+    "S": { "item": "create:brass_sheet" },
+    "D": { "item": "create:deployer" },
+    "P": { "item": "create:precision_mechanism" },
+    "K": { "item": "refinedstorage:construction_core" },
+    "T": { "item": "create:electron_tube" }
+  },
+  "result": { "id": "rscreatebridge:assembly_controller", "count": 1 }
+}

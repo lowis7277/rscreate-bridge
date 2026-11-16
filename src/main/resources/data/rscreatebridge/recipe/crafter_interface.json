@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "SPS",
+    "CIC",
+    "SPS"
+  ],
+  "key": {
+    "S": { "item": "create:brass_sheet" },
+    "P": { "item": "create:precision_mechanism" },
+    "C": { "item": "create:mechanical_crafter" },
+    "I": { "item": "refinedstorage:interface" }
+  },
+  "result": { "id": "rscreatebridge:crafter_interface", "count": 1 }
+}

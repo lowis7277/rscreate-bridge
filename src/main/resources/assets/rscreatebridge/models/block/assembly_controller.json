@@ -1,0 +1,12 @@
+{
+  "parent": "minecraft:block/cube",
+  "textures": {
+    "particle": "rscreatebridge:block/assembly_controller_side",
+    "north": "rscreatebridge:block/assembly_controller_front",
+    "south": "rscreatebridge:block/assembly_controller_side",
+    "east": "rscreatebridge:block/assembly_controller_side",
+    "west": "rscreatebridge:block/assembly_controller_side",
+    "up": "rscreatebridge:block/assembly_controller_top",
+    "down": "rscreatebridge:block/assembly_controller_top"
+  }
+}

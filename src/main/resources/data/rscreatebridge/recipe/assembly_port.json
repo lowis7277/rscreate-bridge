@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "IPI",
+    "TAT",
+    "ICI"
+  ],
+  "key": {
+    "I": { "item": "create:iron_sheet" },
+    "P": { "item": "refinedstorage:basic_processor" },
+    "T": { "item": "create:electron_tube" },
+    "A": { "item": "create:andesite_casing" },
+    "C": { "item": "create:chute" }
+  },
+  "result": { "id": "rscreatebridge:assembly_port", "count": 1 }
+}

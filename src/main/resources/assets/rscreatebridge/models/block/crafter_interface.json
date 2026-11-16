@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/cube_column",
+  "textures": {
+    "particle": "rscreatebridge:block/crafter_interface_side",
+    "side": "rscreatebridge:block/crafter_interface_side",
+    "end": "rscreatebridge:block/crafter_interface_top"
+  }
+}

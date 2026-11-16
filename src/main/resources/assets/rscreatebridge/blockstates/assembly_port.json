@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "rscreatebridge:block/assembly_port"
+    },
+    "facing=east": {
+      "model": "rscreatebridge:block/assembly_port",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "rscreatebridge:block/assembly_port",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "rscreatebridge:block/assembly_port",
+      "y": 270
+    }
+  }
+}

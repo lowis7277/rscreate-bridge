@@ -16,6 +16,14 @@ base {
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
+// Test mod: GameTests and the /rscbtest demo command. Built separately, never shipped with the mod.
+sourceSets {
+    testkit {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
 neoForge {
     version = project.neo_version
 
@@ -24,13 +32,22 @@ neoForge {
         minecraftVersion = project.parchment_minecraft_version
     }
 
+    addModdingDependenciesTo(sourceSets.testkit)
+
     runs {
         client {
             client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'rscbtestkit'
         }
         server {
             server()
             programArgument '--nogui'
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'rscbtestkit'
+        }
+        // Runs every GameTest and exits (non-zero exit code if any fails).
+        gameTestServer {
+            type = "gameTestServer"
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'rscbtestkit'
         }
         configureEach {
             logLevel = org.slf4j.event.Level.INFO
@@ -41,11 +58,15 @@ neoForge {
         "${mod_id}" {
             sourceSet(sourceSets.main)
         }
+        rscbtestkit {
+            sourceSet(sourceSets.testkit)
+        }
     }
 }
 
 configurations {
     runtimeClasspath.extendsFrom localRuntime
+    testkitCompileOnly.extendsFrom compileOnly
 }
 
 repositories {
@@ -98,6 +119,13 @@ var generateModMetadata = tasks.register("generateModMetadata", ProcessResources
 }
 sourceSets.main.resources.srcDir generateModMetadata
 neoForge.ideSyncTask generateModMetadata
+
+// Test mod jar, for a development instance: ./gradlew testkitJar
+tasks.register('testkitJar', Jar) {
+    archiveFileName = "rscreatebridge-testkit-${mod_version}.jar"
+    destinationDirectory = layout.buildDirectory.dir('libs')
+    from sourceSets.testkit.output
+}
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'

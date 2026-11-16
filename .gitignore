@@ -39,12 +39,10 @@ run/
 repo/
 !**/src/**/repo/
 
-### Proyecto ###
+### Project ###
 libs/*.jar
-libs/nested/
 
 ### Local ###
 local.gradle
-src/testkit/
 notas/
 tools/__pycache__/

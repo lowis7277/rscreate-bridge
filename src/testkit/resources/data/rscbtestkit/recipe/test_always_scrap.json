@@ -1,0 +1,17 @@
+{
+  "type": "create:sequenced_assembly",
+  "ingredient": { "item": "minecraft:clay_ball" },
+  "loops": 1,
+  "results": [
+    { "id": "minecraft:diamond_block", "chance": 0.000001 },
+    { "id": "minecraft:dirt" }
+  ],
+  "sequence": [
+    {
+      "type": "create:pressing",
+      "ingredients": [ { "item": "minecraft:brick" } ],
+      "results": [ { "id": "minecraft:brick" } ]
+    }
+  ],
+  "transitional_item": { "id": "minecraft:brick" }
+}

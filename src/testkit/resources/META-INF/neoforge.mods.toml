@@ -1,0 +1,33 @@
+modLoader="javafml"
+loaderVersion="[1,)"
+license="MIT"
+
+[[mods]]
+modId="rscbtestkit"
+version="1.0.0"
+displayName="RS Create Bridge - Testkit"
+description='''
+Development only: a demo setup (/rscbtest demo or /function rscbtest:demo) and the GameTests of RS Create Bridge.
+Not meant for servers or regular play.
+'''
+
+[[dependencies.rscbtestkit]]
+    modId="rscreatebridge"
+    type="required"
+    versionRange="[0.4.0,)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.rscbtestkit]]
+    modId="refinedstorage"
+    type="required"
+    versionRange="[2.0.9,2.1)"
+    ordering="AFTER"
+    side="BOTH"
+
+[[dependencies.rscbtestkit]]
+    modId="create"
+    type="required"
+    versionRange="[6.0.10,6.1)"
+    ordering="AFTER"
+    side="BOTH"

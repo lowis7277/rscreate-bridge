@@ -19,10 +19,13 @@ import dev.rscreatebridge.common.Stock;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.Ingredient;
@@ -47,48 +50,66 @@ public record AssemblyRecipeInfo(ResourceLocation id,
                                  ItemStack transitional,
                                  ItemStack mainOutput,
                                  @Nullable String unsupportedStep,
-                                 List<ItemStack> results) {
+                                 List<ItemStack> results) implements ProcessRecipe {
 
-    public enum StepType {
-        DEPLOYING("deploying"),
-        PRESSING("pressing"),
-        FILLING("filling"),
-        /** Mechanical mixer over a basin (create:mixing recipes). */
-        MIXING("mixing"),
-        /** Mechanical press over a basin (create:compacting recipes). */
-        COMPACTING("compacting");
-
-        private final String key;
-
-        StepType(final String key) {
-            this.key = key;
-        }
-
-        public String translationKey() {
-            return "rscreatebridge.step." + key;
-        }
-
-        /** Name of the machine that performs this step (deployer, press, spout). */
-        public String machineKey() {
-            return "rscreatebridge.machine." + key;
-        }
-
-        /** Does the station use a basin (instead of a depot)? */
-        public boolean usesBasin() {
-            return this == MIXING || this == COMPACTING;
-        }
-    }
-
-    public record Step(StepType type, @Nullable Ingredient heldItem, boolean keepHeldItem,
+    public record Step(MachineType type, @Nullable Ingredient heldItem, boolean keepHeldItem,
                        @Nullable SizedFluidIngredient fluid) {
-    }
-
-    public int totalSteps() {
-        return steps.size() * loops;
     }
 
     public boolean isSupported() {
         return unsupportedStep == null;
+    }
+
+    // ------------------------------------------------------------------ ProcessRecipe
+
+    @Override
+    public Job.Kind kind() {
+        return isSingleStep() ? Job.Kind.SINGLE : Job.Kind.SEQUENCED;
+    }
+
+    @Override
+    public Set<MachineType> machines() {
+        final Set<MachineType> machines = new LinkedHashSet<>(); // in step order
+        for (final Step step : steps) {
+            machines.add(step.type());
+        }
+        return machines;
+    }
+
+    /** One job per base item; the step ingredients are extras. Recipes with unsupported steps never match. */
+    @Nullable
+    @Override
+    public Match match(final Collection<ResourceAmount> resources) {
+        final Split split = isSupported() ? split(resources) : null;
+        if (split == null) {
+            return null;
+        }
+        final List<Stock> starts = new ArrayList<>();
+        for (final ResourceAmount base : split.bases().asList()) {
+            final Stock unit = new Stock();
+            unit.add(base.resource(), 1);
+            for (long i = 0; i < base.amount(); i++) {
+                starts.add(unit);
+            }
+        }
+        return new Match(List.copyOf(starts), split.extras());
+    }
+
+    /** The operation for the step the piece is at. */
+    @Nullable
+    @Override
+    public Operation next(final Job job) {
+        if (steps.isEmpty()) {
+            return null;
+        }
+        final Step step = nextStep(job.piece());
+        return new Operation(step.type(), step.heldItem(), step.fluid(),
+            com.simibubi.create.content.processing.recipe.HeatCondition.NONE);
+    }
+
+    @Override
+    public Component productName() {
+        return mainOutput.getHoverName();
     }
 
     /** What a full run consumes, as requirements for the matcher. */
@@ -96,10 +117,10 @@ public record AssemblyRecipeInfo(ResourceLocation id,
         final List<ResourceMatcher.Requirement> reqs = new ArrayList<>();
         reqs.add(new ResourceMatcher.Requirement(itemPredicate(base), multiplier));
         for (final Step step : steps) {
-            if (step.type() == StepType.DEPLOYING && step.heldItem() != null) {
+            if (step.type() == MachineType.DEPLOYING && step.heldItem() != null) {
                 final long perRun = step.keepHeldItem() ? 1 : loops;
                 reqs.add(new ResourceMatcher.Requirement(itemPredicate(step.heldItem()), perRun * multiplier));
-            } else if (step.type() == StepType.FILLING && step.fluid() != null) {
+            } else if (step.type() == MachineType.FILLING && step.fluid() != null) {
                 final SizedFluidIngredient fluid = step.fluid();
                 reqs.add(new ResourceMatcher.Requirement(
                     key -> key instanceof FluidResource fr && fluid.ingredient().test(Stock.toFluidStack(fr, 1)),
@@ -112,7 +133,7 @@ public record AssemblyRecipeInfo(ResourceLocation id,
     private long itemUnitsPerRun() {
         long units = 1;
         for (final Step step : steps) {
-            if (step.type() == StepType.DEPLOYING && step.heldItem() != null) {
+            if (step.type() == MachineType.DEPLOYING && step.heldItem() != null) {
                 units += step.keepHeldItem() ? 1 : loops;
             }
         }
@@ -122,7 +143,7 @@ public record AssemblyRecipeInfo(ResourceLocation id,
     private long fluidUnitsPerRun() {
         long units = 0;
         for (final Step step : steps) {
-            if (step.type() == StepType.FILLING && step.fluid() != null) {
+            if (step.type() == MachineType.FILLING && step.fluid() != null) {
                 units += (long) step.fluid().amount() * loops;
             }
         }
@@ -159,24 +180,16 @@ public record AssemblyRecipeInfo(ResourceLocation id,
 
     // ------------------------------------------------------------------ one-loop patterns (JEI)
 
-    /**
-     * Pattern built with JEI: 1 base ingredient + each step's input once (not per loop).
-     * {@code fullKitPerRun} is what a full run consumes; {@code extraPerRun} is what has to be taken from
-     * the network on top of what RS delivered.
-     */
-    public record LoopPlan(int runs, Stock fullKitPerRun, Stock extraPerRun) {
-    }
-
     /** Requirements for a single pass through the sequence, and the factor to reach a full run. */
     private List<ResourceMatcher.Requirement> requirementsPerLoop(final List<Long> factors) {
         final List<ResourceMatcher.Requirement> reqs = new ArrayList<>();
         reqs.add(new ResourceMatcher.Requirement(itemPredicate(base), 1));
         factors.add(1L);
         for (final Step step : steps) {
-            if (step.type() == StepType.DEPLOYING && step.heldItem() != null) {
+            if (step.type() == MachineType.DEPLOYING && step.heldItem() != null) {
                 reqs.add(new ResourceMatcher.Requirement(itemPredicate(step.heldItem()), 1));
                 factors.add(step.keepHeldItem() ? 1L : loops);
-            } else if (step.type() == StepType.FILLING && step.fluid() != null) {
+            } else if (step.type() == MachineType.FILLING && step.fluid() != null) {
                 final SizedFluidIngredient fluid = step.fluid();
                 reqs.add(new ResourceMatcher.Requirement(
                     key -> key instanceof FluidResource fr && fluid.ingredient().test(Stock.toFluidStack(fr, 1)),
@@ -186,50 +199,6 @@ public record AssemblyRecipeInfo(ResourceLocation id,
         }
         return reqs;
     }
-
-    @Nullable
-    public LoopPlan loopPatternPlan(final Collection<ResourceAmount> resources) {
-        if (loops <= 1 || resources.isEmpty()) {
-            return null;
-        }
-        final List<Long> factors = new ArrayList<>();
-        final List<ResourceMatcher.Requirement> perLoop = requirementsPerLoop(factors);
-        long neededUnits = 0;
-        for (final ResourceMatcher.Requirement r : perLoop) {
-            neededUnits += r.amount();
-        }
-        long givenUnits = 0;
-        for (final ResourceAmount r : resources) {
-            givenUnits += r.amount();
-        }
-        if (neededUnits == 0 || givenUnits % neededUnits != 0) {
-            return null;
-        }
-        final long k = givenUnits / neededUnits;
-        final List<ResourceAmount> oneRun = new ArrayList<>();
-        for (final ResourceAmount r : resources) {
-            if (r.amount() % k != 0) {
-                return null;
-            }
-            oneRun.add(new ResourceAmount(r.resource(), r.amount() / k));
-        }
-        final long[][] assignment = ResourceMatcher.matchExactly(perLoop, oneRun);
-        if (assignment == null || k > Integer.MAX_VALUE) {
-            return null;
-        }
-        final Stock full = new Stock();
-        final Stock extra = new Stock();
-        for (int j = 0; j < oneRun.size(); j++) {
-            long total = 0;
-            for (int i = 0; i < perLoop.size(); i++) {
-                total += assignment[i][j] * factors.get(i);
-            }
-            full.add(oneRun.get(j).resource(), total);
-            extra.add(oneRun.get(j).resource(), total - oneRun.get(j).amount());
-        }
-        return new LoopPlan((int) k, full, extra);
-    }
-
 
     // ------------------------------------------------------------------ pattern -> base items + extras
 
@@ -350,10 +319,6 @@ public record AssemblyRecipeInfo(ResourceLocation id,
         return ItemStack.isSameItem(stack, mainOutput) && !stack.has(AllDataComponents.SEQUENCED_ASSEMBLY);
     }
 
-    public String describe() {
-        return BuiltInRegistries.ITEM.getKey(mainOutput.getItem()) + " (" + id + ")";
-    }
-
     // ------------------------------------------------------------------ parsing
 
     private static java.util.function.Predicate<ResourceKey> itemPredicate(final Ingredient ingredient) {
@@ -421,11 +386,11 @@ public record AssemblyRecipeInfo(ResourceLocation id,
         final RecipeType<?> type = recipe.getType();
         final Step step;
         if (type == AllRecipeTypes.DEPLOYING.getType() && recipe instanceof ItemApplicationRecipe deploying) {
-            step = new Step(StepType.DEPLOYING, deploying.getRequiredHeldItem(), deploying.shouldKeepHeldItem(), null);
+            step = new Step(MachineType.DEPLOYING, deploying.getRequiredHeldItem(), deploying.shouldKeepHeldItem(), null);
         } else if (type == AllRecipeTypes.PRESSING.getType()) {
-            step = new Step(StepType.PRESSING, null, false, null);
+            step = new Step(MachineType.PRESSING, null, false, null);
         } else if (type == AllRecipeTypes.FILLING.getType() && recipe instanceof FillingRecipe filling) {
-            step = new Step(StepType.FILLING, null, false, filling.getRequiredFluid());
+            step = new Step(MachineType.FILLING, null, false, filling.getRequiredFluid());
         } else {
             return null;
         }
@@ -467,11 +432,11 @@ public record AssemblyRecipeInfo(ResourceLocation id,
             final ProcessingRecipe<?, ?> step = sequenced.getRecipe();
             final RecipeType<?> type = step.getType();
             if (type == AllRecipeTypes.DEPLOYING.getType() && step instanceof ItemApplicationRecipe deploying) {
-                steps.add(new Step(StepType.DEPLOYING, deploying.getRequiredHeldItem(), deploying.shouldKeepHeldItem(), null));
+                steps.add(new Step(MachineType.DEPLOYING, deploying.getRequiredHeldItem(), deploying.shouldKeepHeldItem(), null));
             } else if (type == AllRecipeTypes.PRESSING.getType()) {
-                steps.add(new Step(StepType.PRESSING, null, false, null));
+                steps.add(new Step(MachineType.PRESSING, null, false, null));
             } else if (type == AllRecipeTypes.FILLING.getType() && step instanceof FillingRecipe filling) {
-                steps.add(new Step(StepType.FILLING, null, false, filling.getRequiredFluid()));
+                steps.add(new Step(MachineType.FILLING, null, false, filling.getRequiredFluid()));
             } else if (unsupported == null) {
                 unsupported = typeName(step);
             }
@@ -507,9 +472,9 @@ public record AssemblyRecipeInfo(ResourceLocation id,
         final java.util.Map<String, KitEntry> grouped = new java.util.LinkedHashMap<>();
         addItems(grouped, base, 1);
         for (final AssemblyRecipeInfo.Step step : steps) {
-            if (step.type() == AssemblyRecipeInfo.StepType.DEPLOYING && step.heldItem() != null) {
+            if (step.type() == MachineType.DEPLOYING && step.heldItem() != null) {
                 addItems(grouped, step.heldItem(), step.keepHeldItem() ? 1 : loops);
-            } else if (step.type() == AssemblyRecipeInfo.StepType.FILLING && step.fluid() != null) {
+            } else if (step.type() == MachineType.FILLING && step.fluid() != null) {
                 addFluid(grouped, step.fluid(), (long) step.fluid().amount() * loops);
             }
         }

@@ -1,0 +1,30 @@
+{
+  "type": "create:sequenced_assembly",
+  "ingredient": { "item": "minecraft:flint" },
+  "loops": 2,
+  "results": [
+    { "id": "minecraft:emerald" },
+    { "id": "minecraft:dirt", "chance": 0.000001 }
+  ],
+  "sequence": [
+    {
+      "type": "create:filling",
+      "ingredients": [
+        { "item": "minecraft:nether_brick" },
+        { "type": "neoforge:single", "amount": 100, "fluid": "minecraft:lava" }
+      ],
+      "results": [ { "id": "minecraft:nether_brick" } ]
+    },
+    {
+      "type": "create:pressing",
+      "ingredients": [ { "item": "minecraft:nether_brick" } ],
+      "results": [ { "id": "minecraft:nether_brick" } ]
+    },
+    {
+      "type": "create:deploying",
+      "ingredients": [ { "item": "minecraft:nether_brick" }, { "item": "minecraft:stick" } ],
+      "results": [ { "id": "minecraft:nether_brick" } ]
+    }
+  ],
+  "transitional_item": { "id": "minecraft:nether_brick" }
+}

@@ -59,6 +59,45 @@ rejected.
 - **Create wrench**: click rotates the Port or the Controller; shift + click picks it up.
 - The Controller and the Ports have no inventory: everything goes through the RS network.
 
+## How it works
+
+### The RS side
+The Autocrafter doesn't talk to Create machines directly. `BridgeSinkFactory` is registered with Refined Storage's
+public API: when an Autocrafter points at one of this mod's blocks, RS hands the pattern's resources to that block
+instead of inserting them anywhere. For every other block it answers "not mine", so the rest of RS behaves as
+without the mod. The mod's blocks expose no inventory towards RS, so the resources can't be inserted twice.
+
+### Crafter Interface
+`CrafterGrid` maps the Mechanical Crafter array to recipe coordinates, `MechanicalPlanner` finds the
+`create:mechanical_crafting` recipe that is built exactly from the delivered items and where each one goes, and
+`CrafterInterfaceBlockEntity` inserts one item per crafter, starts the array and sends the result to the network.
+
+### Assembly Controller: recipes are lists of operations
+```
+ RS resources ──► Recipes.matches() ──► ProcessRecipe ──► Jobs ──► next Operation ──► station ──► outputs
+                     (cached)            .match()                    .next(job)
+```
+- **`Operation`**: one thing to do at one station: the machine (`MachineType`), what it has to be loaded with
+  (deployer item, spout fluid) and the heat it needs.
+- **`ProcessRecipe`**: a recipe the controller can make. It says how RS resources split into jobs (`match`) and
+  which operation comes next for a job (`next`). There are two implementations:
+  - `AssemblyRecipeInfo`: sequenced assembly (one operation per step, repeated for every loop) and single-step
+    press, deployer and spout recipes (one operation);
+  - `BasinRecipeInfo`: mixer and basin press recipes (one operation, with the whole kit in the basin).
+- **`Recipes`**: every recipe in priority order, and a cache of which recipes a given set of resources matches.
+- **`Job`**: one product in progress: what it starts from, what the controller holds for it, and which station it
+  is at.
+- **`StationOps`**: everything that touches a station, for depots and basins: is it empty, place the inputs, did
+  Create finish, take the inputs back.
+- **`AssemblyControllerBlockEntity`** runs the same cycle for every job: pick a free station for the next operation,
+  load its machine, place the inputs, wait for Create, sort the outputs (product to the network, intermediate back
+  to the queue, scrap means starting over). A station in an unloaded chunk pauses its job.
+- **`AssemblyPortBlockEntity`** describes a station (depot or basin, machine, heat, problems). Ports find each other
+  through the RS network, not by scanning the world.
+
+Supporting a new kind of Create recipe means adding a `ProcessRecipe`; a new machine also needs a `MachineType`
+and its handling in `StationOps` and `AssemblyPortBlockEntity`.
+
 ## Recipes
 - **Crafter Interface**: 4 brass sheets, 2 precision mechanisms, 2 mechanical crafters and 1 RS interface.
 - **Assembly Controller**: 4 brass sheets, 2 precision mechanisms, 1 deployer, 1 RS construction core and
@@ -81,6 +120,15 @@ setup is needed:
 The jar ends up in `build/libs/`. Both the server and the clients need it (it adds blocks).
 
 Block textures are generated with `python tools/make_textures.py .` (requires Pillow).
+
+## Development
+- `./gradlew runGameTestServer` runs the GameTests (`src/testkit`) against real Create and Refined Storage. They
+  also run on every push through GitHub Actions.
+- `./gradlew runClient` starts a development client with the test mod; `/function rscbtest:demo` builds a demo
+  setup with every block and machine.
+- `./gradlew testkitJar` builds the test mod as a separate jar, for a test instance. It is never needed to play.
+- Optional: put the Cable Tiers jar in `libs/` and add it as `localRuntime` in a `local.gradle` file to also run
+  the Cable Tiers compatibility tests (they pass right away when it isn't present).
 
 ## Use of AI tools
 AI tools were used during the development of this mod.

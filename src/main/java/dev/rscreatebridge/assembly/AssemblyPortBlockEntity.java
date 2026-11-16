@@ -216,7 +216,7 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
 
     /** Which step the machine above can do, or null if there is no valid machine. */
     @Nullable
-    public AssemblyRecipeInfo.StepType machineType() {
+    public MachineType machineType() {
         if (level == null) {
             return null;
         }
@@ -229,19 +229,19 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
         if (basin) {
             // Over a basin: mixer (mixing) or press (compacting).
             if (MIXER.equals(id)) {
-                return AssemblyRecipeInfo.StepType.MIXING;
+                return MachineType.MIXING;
             }
-            return PRESS.equals(id) ? AssemblyRecipeInfo.StepType.COMPACTING : null;
+            return PRESS.equals(id) ? MachineType.COMPACTING : null;
         }
         if (DEPLOYER.equals(id)) {
             return state.hasProperty(BlockStateProperties.FACING) && state.getValue(BlockStateProperties.FACING) == Direction.DOWN
-                ? AssemblyRecipeInfo.StepType.DEPLOYING : null;
+                ? MachineType.DEPLOYING : null;
         }
         if (PRESS.equals(id)) {
-            return AssemblyRecipeInfo.StepType.PRESSING;
+            return MachineType.PRESSING;
         }
         if (SPOUT.equals(id)) {
-            return AssemblyRecipeInfo.StepType.FILLING;
+            return MachineType.FILLING;
         }
         return null;
     }
@@ -251,8 +251,8 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
         if (level == null) {
             return false;
         }
-        final AssemblyRecipeInfo.StepType type = machineType();
-        if (type == AssemblyRecipeInfo.StepType.FILLING) {
+        final MachineType type = machineType();
+        if (type == MachineType.FILLING) {
             return true;
         }
         final BlockEntity be = level.getBlockEntity(machinePos());
@@ -283,7 +283,7 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
 
     @Nullable
     public IItemHandler deployer() {
-        if (level == null || machineType() != AssemblyRecipeInfo.StepType.DEPLOYING) {
+        if (level == null || machineType() != MachineType.DEPLOYING) {
             return null;
         }
         final IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, machinePos(), null);
@@ -301,7 +301,7 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
 
     @Nullable
     public IFluidHandler spout() {
-        if (level == null || machineType() != AssemblyRecipeInfo.StepType.FILLING) {
+        if (level == null || machineType() != MachineType.FILLING) {
             return null;
         }
         final IFluidHandler top = level.getCapability(Capabilities.FluidHandler.BLOCK, machinePos(), Direction.UP);
@@ -478,7 +478,7 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
         final List<Component> lines = new ArrayList<>();
         lines.add(Component.translatable("block.rscreatebridge.assembly_port").withStyle(ChatFormatting.GOLD));
         lines.add(describeNetwork());
-        final AssemblyRecipeInfo.StepType type = machineType();
+        final MachineType type = machineType();
         final Component problem = stationProblem();
         if (type != null) {
             lines.add(Component.translatable("rscreatebridge.port.info.machine", Component.translatable(type.machineKey()))

@@ -20,7 +20,10 @@ jobs:
       - name: Build
         run: ./gradlew build
 
+      - name: GameTests
+        run: ./gradlew runGameTestServer
+
       - uses: actions/upload-artifact@v4
         with:
           name: rscreatebridge
-          path: build/libs/*.jar
+          path: build/libs/rscreatebridge-1.21.1-*.jar

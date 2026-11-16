@@ -6,6 +6,7 @@ import com.refinedmods.refinedstorage.api.resource.ResourceAmount;
 import com.refinedmods.refinedstorage.api.resource.ResourceKey;
 import com.refinedmods.refinedstorage.common.support.resource.FluidResource;
 import com.refinedmods.refinedstorage.common.support.resource.ItemResource;
+import com.simibubi.create.content.processing.recipe.HeatCondition;
 
 import dev.rscreatebridge.Config;
 import dev.rscreatebridge.RSCreateBridge;
@@ -32,6 +33,7 @@ import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
@@ -116,57 +118,20 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             rejectStatus("rscreatebridge.status.no_network");
             return ExternalPatternSink.Result.REJECTED;
         }
-        // Candidates: sequenced, single-step and basin recipes matching what RS delivered. If there is more
-        // than one, the first one whose machines are on the network wins.
-        final Set<AssemblyRecipeInfo.StepType> available = availableMachines();
-        AssemblyRecipeInfo.StepType firstMissing = null;
-        final List<Job> created = new ArrayList<>();
-        Stock extras = null;
-        final List<AssemblyRecipeInfo> depotRecipes = new ArrayList<>(AssemblyRecipeInfo.all(level));
-        depotRecipes.addAll(AssemblyRecipeInfo.allSingleStep(level));
-        for (final AssemblyRecipeInfo info : depotRecipes) {
-            if (!info.isSupported()) {
-                continue;
-            }
-            final AssemblyRecipeInfo.Split split = info.split(resources);
-            if (split == null) {
-                continue;
-            }
-            final AssemblyRecipeInfo.StepType missing = missingMachine(info, available);
-            if (missing != null) {
-                firstMissing = firstMissing == null ? missing : firstMissing;
-                continue;
-            }
-            final Job.Kind kind = info.isSingleStep() ? Job.Kind.SINGLE : Job.Kind.SEQUENCED;
-            for (final ResourceAmount base : split.bases().asList()) {
-                final Stock unit = new Stock();
-                unit.add(base.resource(), 1);
-                for (long i = 0; i < base.amount(); i++) {
-                    created.add(new Job(kind, info.id(), unit));
-                }
-            }
-            extras = split.extras();
-            break;
-        }
-        BasinRecipeInfo basin = null;
-        if (created.isEmpty()) {
-            for (final BasinRecipeInfo info : BasinRecipeInfo.all(level)) {
-                final List<Stock> kits = info.split(resources);
-                if (kits == null) {
-                    continue;
-                }
-                if (!available.contains(info.type())) {
-                    firstMissing = firstMissing == null ? info.type() : firstMissing;
-                    continue;
-                }
-                basin = info;
-                for (final Stock kit : kits) {
-                    created.add(new Job(Job.Kind.BASIN, info.id(), kit));
-                }
+        // Every recipe these resources match (cached), in priority order. The first one whose machines are on
+        // the network wins.
+        final Set<MachineType> available = availableMachines();
+        MachineType firstMissing = null;
+        Recipes.Candidate chosen = null;
+        for (final Recipes.Candidate candidate : Recipes.matches(level, resources)) {
+            final MachineType missing = firstMissing(candidate.recipe().machines(), available);
+            if (missing == null) {
+                chosen = candidate;
                 break;
             }
+            firstMissing = firstMissing == null ? missing : firstMissing;
         }
-        if (created.isEmpty()) {
+        if (chosen == null) {
             if (firstMissing != null) {
                 rejectStatus("rscreatebridge.assembly.problem.no_port", Component.translatable(firstMissing.machineKey()));
             } else {
@@ -174,9 +139,14 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             }
             return ExternalPatternSink.Result.REJECTED;
         }
-        if (basin != null && !heatAvailable(basin)) {
-            rejectStatus("rscreatebridge.assembly.problem.no_heat", basin.name(), basin.heatName());
+        final ProcessRecipe recipe = chosen.recipe();
+        if (!heatAvailable(recipe)) {
+            rejectStatus("rscreatebridge.assembly.problem.no_heat", recipe.productName(), heatName(recipe.heat()));
             return ExternalPatternSink.Result.REJECTED;
+        }
+        final List<Job> created = new ArrayList<>();
+        for (final Stock start : chosen.match().starts()) {
+            created.add(new Job(recipe.kind(), recipe.id(), start));
         }
         if (jobs.size() + created.size() > Config.MAX_QUEUED_JOBS.getAsInt()) {
             return ExternalPatternSink.Result.REJECTED; // queue full: RS retries later
@@ -184,9 +154,7 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         if (action == Action.SIMULATE) {
             return ExternalPatternSink.Result.ACCEPTED;
         }
-        if (extras != null) {
-            materials.addAll(extras.asList());
-        }
+        materials.addAll(chosen.match().extras().asList());
         jobs.addAll(created);
         RSCreateBridge.LOGGER.debug("Controller {}: {} job(s) of {} queued", worldPosition.toShortString(),
             created.size(), created.getFirst().recipe);
@@ -198,10 +166,10 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     }
 
     /** Machine types that have at least one port on the network. */
-    private Set<AssemblyRecipeInfo.StepType> availableMachines() {
-        final Set<AssemblyRecipeInfo.StepType> available = EnumSet.noneOf(AssemblyRecipeInfo.StepType.class);
+    private Set<MachineType> availableMachines() {
+        final Set<MachineType> available = EnumSet.noneOf(MachineType.class);
         for (final AssemblyPortBlockEntity port : ports()) {
-            final AssemblyRecipeInfo.StepType type = port.machineType();
+            final MachineType type = port.machineType();
             if (type != null && port.hasStation()) {
                 available.add(type);
             }
@@ -210,22 +178,28 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     }
 
     /** Does any port with the recipe's machine have the heat it needs? */
-    private boolean heatAvailable(final BasinRecipeInfo info) {
+    private boolean heatAvailable(final ProcessRecipe recipe) {
+        if (recipe.heat() == HeatCondition.NONE) {
+            return true;
+        }
         for (final AssemblyPortBlockEntity port : ports()) {
-            if (port.machineType() == info.type() && info.heatOk(port.heat())) {
+            if (recipe.machines().contains(port.machineType()) && recipe.heat().testBlazeBurner(port.heat())) {
                 return true;
             }
         }
         return false;
     }
 
-    /** The first machine type the recipe needs that has no port on the network, or null. */
+    private static Component heatName(final HeatCondition heat) {
+        return Component.translatable("rscreatebridge.heat_needed." + heat.getSerializedName());
+    }
+
+    /** The first needed machine type (in the recipe's order) that has no port on the network, or null. */
     @Nullable
-    private static AssemblyRecipeInfo.StepType missingMachine(final AssemblyRecipeInfo info,
-                                                              final Set<AssemblyRecipeInfo.StepType> available) {
-        for (final AssemblyRecipeInfo.Step step : info.steps()) {
-            if (!available.contains(step.type())) {
-                return step.type();
+    private static MachineType firstMissing(final Set<MachineType> needed, final Set<MachineType> available) {
+        for (final MachineType machine : needed) {
+            if (!available.contains(machine)) {
+                return machine;
             }
         }
         return null;
@@ -346,8 +320,8 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
 
     /** Does an item a deployer picked up belong to this job (intermediate or result of its recipe)? */
     private boolean belongsTo(final Job job, final ItemStack held) {
-        final AssemblyRecipeInfo info = job.usesBasin() ? null : AssemblyRecipeInfo.byId(level, job.recipe);
-        return info != null && (info.isIntermediate(held) || info.isResult(held));
+        return Recipes.byId(level, job.recipe) instanceof AssemblyRecipeInfo info
+            && (info.isIntermediate(held) || info.isResult(held));
     }
 
     private void leaveStation(final Job job, final AssemblyPortBlockEntity port) {
@@ -424,8 +398,7 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     /** Sorts what came out of a station. */
     private void outputs(final Job job, final List<ItemStack> items, final Stock fluids) {
         returns.addAll(fluids.asList());
-        final AssemblyRecipeInfo info = job.usesBasin() ? null : AssemblyRecipeInfo.byId(level, job.recipe);
-        if (info == null || info.isSingleStep()) {
+        if (!(Recipes.byId(level, job.recipe) instanceof AssemblyRecipeInfo info) || info.isSingleStep()) {
             // Single step or basin: everything that came out is the result (including chance outputs).
             for (final ItemStack stack : items) {
                 returns.addItem(stack);
@@ -483,12 +456,8 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     }
 
     private Component productName(final Job job) {
-        if (job.usesBasin()) {
-            final BasinRecipeInfo info = BasinRecipeInfo.byId(level, job.recipe);
-            return info != null ? info.name() : Component.literal(job.recipe.toString());
-        }
-        final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
-        return info != null ? info.mainOutput().getHoverName() : job.base().getHoverName();
+        final ProcessRecipe recipe = Recipes.byId(level, job.recipe);
+        return recipe != null ? recipe.productName() : Component.literal(job.recipe.toString());
     }
 
     private void fail(final Job job, final Component reason) {
@@ -566,16 +535,10 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             if (job.state != Job.State.WAITING_STATION || job.nextTryAt > now || job.holding.isEmpty()) {
                 continue;
             }
-            // What this job needs next: the machine type, plus the depot step or the basin recipe.
-            AssemblyRecipeInfo.Step step = null;
-            BasinRecipeInfo basin = null;
-            if (job.usesBasin()) {
-                basin = BasinRecipeInfo.byId(level, job.recipe);
-            } else {
-                final AssemblyRecipeInfo info = AssemblyRecipeInfo.byId(level, job.recipe);
-                step = info == null || info.steps().isEmpty() ? null : info.nextStep(job.piece());
-            }
-            if (step == null && basin == null) {
+            // The recipe says what this job needs next.
+            final ProcessRecipe recipe = Recipes.byId(level, job.recipe);
+            final Operation op = recipe == null ? null : recipe.next(job);
+            if (op == null) {
                 // The recipe disappeared (datapack reload): its inputs go back to the network and the job ends.
                 returns.addAll(job.holding.asList());
                 job.holding.clear();
@@ -586,12 +549,11 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             if (ports == null) {
                 ports = ports();
             }
-            final AssemblyRecipeInfo.StepType type = basin != null ? basin.type() : step.type();
-            final AssemblyPortBlockEntity port = choosePort(ports, type, step, basin, now);
+            final AssemblyPortBlockEntity port = choosePort(ports, op, recipe.productName(), now);
             if (port == null) {
                 continue;
             }
-            if (step != null && !prepareMachine(port, step)) {
+            if (!prepareMachine(port, op)) {
                 job.nextTryAt = now + MATERIAL_RETRY_TICKS / 5;
                 continue;
             }
@@ -611,26 +573,24 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
     }
 
     /**
-     * A free, working, empty station with the right machine. For a depot step it prefers one that already has
-     * what is needed loaded; for a basin recipe the station needs enough heat.
+     * A free, working, empty station for the operation, with enough heat. Prefers one whose machine already has
+     * what the operation needs loaded.
      */
     @Nullable
-    private AssemblyPortBlockEntity choosePort(final List<AssemblyPortBlockEntity> ports,
-                                               final AssemblyRecipeInfo.StepType type,
-                                               @Nullable final AssemblyRecipeInfo.Step step,
-                                               @Nullable final BasinRecipeInfo basin, final long now) {
+    private AssemblyPortBlockEntity choosePort(final List<AssemblyPortBlockEntity> ports, final Operation op,
+                                               final Component product, final long now) {
         AssemblyPortBlockEntity best = null;
         boolean heatMissing = false;
         for (final AssemblyPortBlockEntity port : ports) {
-            if (port.machineType() != type || !port.isFreeFor(worldPosition, now) || isPortBusy(port)
-                || port.stationProblem() != null || !StationOps.isEmpty(port, type.usesBasin())) {
+            if (port.machineType() != op.machine() || !port.isFreeFor(worldPosition, now) || isPortBusy(port)
+                || port.stationProblem() != null || !StationOps.isEmpty(port, op.machine().usesBasin())) {
                 continue;
             }
-            if (basin != null && !basin.heatOk(port.heat())) {
+            if (!op.heat().testBlazeBurner(port.heat())) {
                 heatMissing = true;
                 continue;
             }
-            if (step == null || isAlreadyLoaded(port, step)) {
+            if (isAlreadyLoaded(port, op)) {
                 return port;
             }
             if (best == null) {
@@ -638,7 +598,7 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             }
         }
         if (best == null && heatMissing) {
-            setStatus(true, "rscreatebridge.assembly.problem.no_heat", basin.name(), basin.heatName());
+            setStatus(true, "rscreatebridge.assembly.problem.no_heat", product, heatName(op.heat()));
         }
         return best;
     }
@@ -655,52 +615,52 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
 
     // ------------------------------------------------------------------ machine loading (depot steps)
 
-    private static boolean isAlreadyLoaded(final AssemblyPortBlockEntity port, final AssemblyRecipeInfo.Step step) {
-        if (step.type() == AssemblyRecipeInfo.StepType.DEPLOYING && step.heldItem() != null) {
+    private static boolean isAlreadyLoaded(final AssemblyPortBlockEntity port, final Operation op) {
+        if (op.heldItem() != null) {
             final IItemHandler hand = port.deployer();
-            return hand != null && step.heldItem().test(hand.getStackInSlot(0));
+            return hand != null && op.heldItem().test(hand.getStackInSlot(0));
         }
-        if (step.type() == AssemblyRecipeInfo.StepType.FILLING && step.fluid() != null) {
+        if (op.fluid() != null) {
             final IFluidHandler tank = port.spout();
             if (tank == null) {
                 return false;
             }
             final FluidStack inside = tank.getFluidInTank(0);
-            return step.fluid().ingredient().test(inside) && inside.getAmount() >= step.fluid().amount();
+            return op.fluid().ingredient().test(inside) && inside.getAmount() >= op.fluid().amount();
         }
         return true;
     }
 
-    /** Gets the machine ready for the step. Returns false if material is missing (the warning stays). */
-    private boolean prepareMachine(final AssemblyPortBlockEntity port, final AssemblyRecipeInfo.Step step) {
-        if (isAlreadyLoaded(port, step)) {
+    /** Gets the machine ready for the operation. Returns false if material is missing (the warning stays). */
+    private boolean prepareMachine(final AssemblyPortBlockEntity port, final Operation op) {
+        if (isAlreadyLoaded(port, op)) {
             return true;
         }
-        if (step.type() == AssemblyRecipeInfo.StepType.DEPLOYING && step.heldItem() != null) {
-            return loadDeployer(port, step);
+        if (op.heldItem() != null) {
+            return loadDeployer(port, op.heldItem());
         }
-        if (step.type() == AssemblyRecipeInfo.StepType.FILLING && step.fluid() != null) {
-            return loadSpout(port, step.fluid());
+        if (op.fluid() != null) {
+            return loadSpout(port, op.fluid());
         }
         return true;
     }
 
-    private boolean loadDeployer(final AssemblyPortBlockEntity port, final AssemblyRecipeInfo.Step step) {
+    private boolean loadDeployer(final AssemblyPortBlockEntity port, final Ingredient heldItem) {
         final IItemHandler hand = port.deployer();
         if (hand == null) {
             return false;
         }
         // 1) Get the unit before touching the hand (if there is none, nothing changes).
-        ItemStack unit = materials.takeItem(step.heldItem(), 1);
+        ItemStack unit = materials.takeItem(heldItem, 1);
         if (unit.isEmpty()) {
             final ResourceKey fromNetwork = extractMatching(
-                key -> key instanceof ItemResource ir && step.heldItem().test(ir.toItemStack(1)), 1);
+                key -> key instanceof ItemResource ir && heldItem.test(ir.toItemStack(1)), 1);
             if (fromNetwork instanceof ItemResource ir) {
                 unit = ir.toItemStack(1);
             }
         }
         if (unit.isEmpty()) {
-            final ItemStack[] options = step.heldItem().getItems();
+            final ItemStack[] options = heldItem.getItems();
             setStatus(true, "rscreatebridge.assembly.problem.missing_materials",
                 options.length > 0 ? options[0].getHoverName() : Component.literal("?"));
             return false;
@@ -877,10 +837,10 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
         final List<Component> lines = new ArrayList<>();
         lines.add(Component.translatable("block.rscreatebridge.assembly_controller").withStyle(ChatFormatting.GOLD));
         lines.add(describeNetwork());
-        final Map<AssemblyRecipeInfo.StepType, Integer> counts = new EnumMap<>(AssemblyRecipeInfo.StepType.class);
+        final Map<MachineType, Integer> counts = new EnumMap<>(MachineType.class);
         int ready = 0;
         for (final AssemblyPortBlockEntity port : ports()) {
-            final AssemblyRecipeInfo.StepType type = port.machineType();
+            final MachineType type = port.machineType();
             if (type != null && port.hasStation()) {
                 counts.merge(type, 1, Integer::sum);
                 if (port.stationProblem() == null) {
@@ -892,13 +852,13 @@ public class AssemblyControllerBlockEntity extends BridgeNodeBlockEntity {
             lines.add(Component.translatable("rscreatebridge.assembly.info.no_ports").withStyle(ChatFormatting.RED));
         } else {
             lines.add(Component.translatable("rscreatebridge.assembly.info.ports",
-                counts.getOrDefault(AssemblyRecipeInfo.StepType.DEPLOYING, 0),
-                counts.getOrDefault(AssemblyRecipeInfo.StepType.PRESSING, 0),
-                counts.getOrDefault(AssemblyRecipeInfo.StepType.FILLING, 0), ready).withStyle(ChatFormatting.GREEN));
-            if (counts.containsKey(AssemblyRecipeInfo.StepType.MIXING) || counts.containsKey(AssemblyRecipeInfo.StepType.COMPACTING)) {
+                counts.getOrDefault(MachineType.DEPLOYING, 0),
+                counts.getOrDefault(MachineType.PRESSING, 0),
+                counts.getOrDefault(MachineType.FILLING, 0), ready).withStyle(ChatFormatting.GREEN));
+            if (counts.containsKey(MachineType.MIXING) || counts.containsKey(MachineType.COMPACTING)) {
                 lines.add(Component.translatable("rscreatebridge.assembly.info.basin_ports",
-                    counts.getOrDefault(AssemblyRecipeInfo.StepType.MIXING, 0),
-                    counts.getOrDefault(AssemblyRecipeInfo.StepType.COMPACTING, 0)).withStyle(ChatFormatting.GREEN));
+                    counts.getOrDefault(MachineType.MIXING, 0),
+                    counts.getOrDefault(MachineType.COMPACTING, 0)).withStyle(ChatFormatting.GREEN));
             }
         }
         if (!jobs.isEmpty()) {

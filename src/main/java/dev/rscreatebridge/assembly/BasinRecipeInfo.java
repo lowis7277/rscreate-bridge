@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -34,11 +35,11 @@ import org.jetbrains.annotations.Nullable;
  * the heat it requires (blaze burner).
  */
 public record BasinRecipeInfo(ResourceLocation id,
-                              AssemblyRecipeInfo.StepType type,
+                              MachineType type,
                               List<Ingredient> items,
                               List<SizedFluidIngredient> fluids,
                               HeatCondition heat,
-                              ItemStack mainOutput) {
+                              ItemStack mainOutput) implements ProcessRecipe {
 
     /** Is that heat enough for this recipe? */
     public boolean heatOk(final BlazeBurnerBlock.HeatLevel level) {
@@ -47,6 +48,36 @@ public record BasinRecipeInfo(ResourceLocation id,
 
     public Component heatName() {
         return Component.translatable("rscreatebridge.heat_needed." + heat.getSerializedName());
+    }
+
+    // ------------------------------------------------------------------ ProcessRecipe
+
+    @Override
+    public Job.Kind kind() {
+        return Job.Kind.BASIN;
+    }
+
+    @Override
+    public Set<MachineType> machines() {
+        return Set.of(type);
+    }
+
+    /** One job per kit: each kit is one run of the recipe, processed in one basin. */
+    @Nullable
+    @Override
+    public Match match(final Collection<ResourceAmount> resources) {
+        final List<Stock> kits = split(resources);
+        return kits == null ? null : new Match(List.copyOf(kits), new Stock());
+    }
+
+    @Override
+    public Operation next(final Job job) {
+        return new Operation(type, null, null, heat);
+    }
+
+    @Override
+    public Component productName() {
+        return name();
     }
 
     public Component name() {
@@ -144,24 +175,14 @@ public record BasinRecipeInfo(ResourceLocation id,
     private static RecipeManager cachedManager;
     private static List<BasinRecipeInfo> cached = List.of();
 
-    @Nullable
-    public static BasinRecipeInfo byId(final Level level, final ResourceLocation id) {
-        for (final BasinRecipeInfo info : all(level)) {
-            if (info.id().equals(id)) {
-                return info;
-            }
-        }
-        return null;
-    }
-
     public static List<BasinRecipeInfo> all(final Level level) {
         final RecipeManager manager = level.getRecipeManager();
         if (manager == cachedManager) {
             return cached;
         }
         final List<BasinRecipeInfo> list = new ArrayList<>();
-        collect(manager, AllRecipeTypes.MIXING.getType(), AssemblyRecipeInfo.StepType.MIXING, list);
-        collect(manager, AllRecipeTypes.COMPACTING.getType(), AssemblyRecipeInfo.StepType.COMPACTING, list);
+        collect(manager, AllRecipeTypes.MIXING.getType(), MachineType.MIXING, list);
+        collect(manager, AllRecipeTypes.COMPACTING.getType(), MachineType.COMPACTING, list);
         list.sort(Comparator.comparing(i -> i.id().toString()));
         cachedManager = manager;
         cached = List.copyOf(list);
@@ -170,7 +191,7 @@ public record BasinRecipeInfo(ResourceLocation id,
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static void collect(final RecipeManager manager, final RecipeType<?> type,
-                                final AssemblyRecipeInfo.StepType stepType, final List<BasinRecipeInfo> out) {
+                                final MachineType stepType, final List<BasinRecipeInfo> out) {
         final List<RecipeHolder<?>> holders = (List) manager.getAllRecipesFor((RecipeType) type);
         for (final RecipeHolder<?> holder : holders) {
             if (!(holder.value() instanceof ProcessingRecipe<?, ?> recipe)) {

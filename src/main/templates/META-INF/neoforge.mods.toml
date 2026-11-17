@@ -1,13 +1,17 @@
 modLoader="javafml"
 loaderVersion="${loader_version_range}"
 license="${mod_license}"
+issueTrackerURL="https://github.com/lowis7277/rscreate-bridge/issues"
 
 [[mods]]
 modId="${mod_id}"
 version="${mod_version}"
 displayName="${mod_name}"
+authors="Lowis7277"
+displayURL="https://github.com/lowis7277/rscreate-bridge"
+logoFile="logo.png"
 description='''
-Lets the Refined Storage 2 Autocrafter drive Create Mechanical Crafters and Sequenced Assembly lines.
+Lets the Refined Storage 2 Autocrafter run Create machines: Mechanical Crafters, sequenced assembly, press, deployer and spout recipes on a depot, and mixer and press recipes on a basin.
 '''
 
 [[dependencies.${mod_id}]]

@@ -32,14 +32,15 @@ Cable Tiers autocrafters.
       |
  [Controller]--cable--+----------------+----------------+
                       |                |                |
-                  [Port]→depot     [Port]→depot     [Port]→basin
+                  [Port]→depot     [Port]→depot     [Port]→basin      (cable on the port's back)
                          deployer         press            mixer      (2 blocks above)
 ```
 - **Station**: a Create depot or basin with a machine 2 blocks above it.
   - Over a **depot**: deployer facing down, mechanical press or spout.
   - Over a **basin**: mechanical mixer or press. If the recipe needs heat, put a blaze burner under the basin.
-- **Assembly Port**: placed against the depot or basin (place it by clicking the side of that block and it will face
-  it) and connected to the network with a cable. The Controller only uses ports on its own network.
+- **Assembly Port**: shaped like an RS importer or exporter. Its head goes against the depot or basin (place it by
+  clicking the side of that block and it will face it) and the RS cable goes on its back: it only connects to the
+  network through that side. The Controller only uses ports on its own network.
 - The Autocrafter gives the Controller **everything** the pattern asks for (base item, cogwheels, lava…), so RS shows
   and reserves it. The Controller takes each step to the right machine, loads what it needs (the deployer's held item,
   the spout's lava) and moves the result to the network.

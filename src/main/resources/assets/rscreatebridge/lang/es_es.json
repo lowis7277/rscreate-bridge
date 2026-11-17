@@ -74,5 +74,6 @@
   "rscreatebridge.assembly.problem.missing_kit": "Faltan ingredientes en la red para rehacer una mezcla; reviso de nuevo enseguida",
   "rscreatebridge.assembly.info.basin_ports": "Basins: %s con mezcladora, %s con prensa",
   "rscreatebridge.assembly.confirm_abort": "¿Abortar %s trabajo(s)? Hacé shift + click derecho otra vez en 3 segundos para confirmar",
-  "rscreatebridge.assembly.nothing_to_abort": "No hay trabajos para abortar"
+  "rscreatebridge.assembly.nothing_to_abort": "No hay trabajos para abortar",
+  "rscreatebridge.port.problem.no_cable": "Red: sin conectar (el cable de RS va atrás del puerto, del lado opuesto al depot o basin)"
 }

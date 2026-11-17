@@ -2,6 +2,12 @@ package dev.rscreatebridge.assembly;
 
 import com.refinedmods.refinedstorage.api.core.Action;
 import com.refinedmods.refinedstorage.api.network.Network;
+import com.refinedmods.refinedstorage.api.network.node.GraphNetworkComponent;
+import com.refinedmods.refinedstorage.api.network.impl.node.SimpleNetworkNode;
+import com.refinedmods.refinedstorage.common.api.RefinedStorageApi;
+import com.refinedmods.refinedstorage.common.api.support.network.ConnectionSink;
+import com.refinedmods.refinedstorage.common.api.support.network.ConnectionStrategy;
+import com.refinedmods.refinedstorage.common.api.support.network.InWorldNetworkNodeContainer;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import com.simibubi.create.content.processing.basin.BasinBlock;
 import com.simibubi.create.content.processing.basin.BasinBlockEntity;
@@ -73,8 +79,56 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
     /** Did this port fill the spout? */
     private boolean loadedFluid;
 
+    /** Set while the super constructor builds the container (see {@link #createMainContainer}). */
+    @Nullable
+    private InWorldNetworkNodeContainer mainContainer;
+
     public AssemblyPortBlockEntity(final BlockPos pos, final BlockState state) {
         super(Registration.ASSEMBLY_PORT_BE.get(), pos, state, Config.ASSEMBLY_PORT_ENERGY.getAsInt());
+    }
+
+    // ================================================================== network connection: only through the back
+
+    /** Like an RS importer or exporter: the front faces the Create station, the back takes the RS cable. */
+    @Override
+    protected InWorldNetworkNodeContainer createMainContainer(final SimpleNetworkNode node) {
+        mainContainer = RefinedStorageApi.INSTANCE.createNetworkNodeContainer(this, node)
+            .connectionStrategy(new BackConnection())
+            .build();
+        return mainContainer;
+    }
+
+    /** Rotating the port (wrench) moves its back: RS has to rebuild its connections. */
+    @Override
+    public void setBlockState(final BlockState state) {
+        final Direction before = facing();
+        super.setBlockState(state);
+        if (level != null && !level.isClientSide() && mainContainer != null && before != facing()) {
+            RefinedStorageApi.INSTANCE.updateNetworkNodeContainer(mainContainer, level);
+        }
+    }
+
+    /**
+     * Is the port connected to anything? RS gives every node a network, even a lone one, so this checks that the
+     * network has other nodes besides this port.
+     */
+    public boolean isConnected() {
+        final Network network = getNetwork();
+        return network != null && network.getComponent(GraphNetworkComponent.class).getContainers().size() > 1;
+    }
+
+    private final class BackConnection implements ConnectionStrategy {
+        @Override
+        public void addOutgoingConnections(final ConnectionSink sink) {
+            final Direction back = facing().getOpposite();
+            sink.tryConnectInSameDimension(worldPosition.relative(back), back.getOpposite());
+        }
+
+        /** {@code direction} points from this port towards the block that wants to connect. */
+        @Override
+        public boolean canAcceptIncomingConnection(final Direction direction, final BlockState state) {
+            return direction == facing().getOpposite();
+        }
     }
 
     // ================================================================== registry
@@ -477,7 +531,9 @@ public class AssemblyPortBlockEntity extends BridgeNodeBlockEntity {
     public List<Component> describe() {
         final List<Component> lines = new ArrayList<>();
         lines.add(Component.translatable("block.rscreatebridge.assembly_port").withStyle(ChatFormatting.GOLD));
-        lines.add(describeNetwork());
+        lines.add(!isConnected()
+            ? Component.translatable("rscreatebridge.port.problem.no_cable").withStyle(ChatFormatting.RED)
+            : describeNetwork());
         final MachineType type = machineType();
         final Component problem = stationProblem();
         if (type != null) {

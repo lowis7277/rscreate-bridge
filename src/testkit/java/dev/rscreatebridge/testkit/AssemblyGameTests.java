@@ -409,6 +409,32 @@ public final class AssemblyGameTests {
             .thenSucceed();
     }
 
+    /**
+     * Like an RS importer or exporter, a port only connects to the network through its back: a cable on a side
+     * does nothing, and turning the port with a wrench moves the connection.
+     */
+    @GameTest(template = "empty", timeoutTicks = 300)
+    public static void portConnectsOnlyThroughItsBack(final GameTestHelper h) {
+        final BlockPos network = new BlockPos(2, 1, 2);
+        final BlockPos port = new BlockPos(3, 1, 2);
+        h.setBlock(network, block("refinedstorage:creative_controller"));
+        // The port faces north (the station side); its back is south. The controller is to its west: a side.
+        h.setBlock(port, dev.rscreatebridge.Registration.ASSEMBLY_PORT.get().defaultBlockState()
+            .setValue(dev.rscreatebridge.assembly.AssemblyPortBlock.FACING, Direction.NORTH));
+        final java.util.function.Supplier<dev.rscreatebridge.assembly.AssemblyPortBlockEntity> be = () -> h.getBlockEntity(port);
+        h.startSequence()
+            .thenIdle(30)
+            .thenExecute(() -> h.assertTrue(!be.get().isConnected(), "A network on the side should not connect"))
+            .thenExecute(() -> h.setBlock(port, h.getBlockState(port)
+                .setValue(dev.rscreatebridge.assembly.AssemblyPortBlock.FACING, Direction.EAST)))
+            .thenWaitUntil(() -> h.assertTrue(be.get().isConnected() && be.get().isNetworkActive(),
+                "Turned to face east, its back (west) touches the network and should connect"))
+            .thenExecute(() -> h.setBlock(port, h.getBlockState(port)
+                .setValue(dev.rscreatebridge.assembly.AssemblyPortBlock.FACING, Direction.SOUTH)))
+            .thenWaitUntil(() -> h.assertTrue(!be.get().isConnected(), "Turned again, it should disconnect"))
+            .thenSucceed();
+    }
+
     /** Ports expose no inventory: a funnel or hopper next to them can't insert or extract anything. */
     @GameTest(template = "empty", timeoutTicks = 200)
     public static void blocksExposeNoInventory(final GameTestHelper h) {

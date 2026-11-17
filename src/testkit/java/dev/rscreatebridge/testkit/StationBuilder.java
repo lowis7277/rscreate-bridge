@@ -96,7 +96,7 @@ public final class StationBuilder {
             final boolean heated = kind.endsWith("_heated");
             final boolean onBasin = kind.startsWith("mixer") || kind.startsWith("basin_press");
             // With heat, the basin goes one block higher (on top of the blaze burner) and so does the port,
-            // with a cable below it joining the row.
+            // with a cable on its back, right above the row.
             final BlockPos depot = o.offset(x, heated ? 1 : 0, 1);
             final BlockPos port = depot.south();
             final BlockPos machine = depot.above(2);
@@ -106,7 +106,7 @@ public final class StationBuilder {
                 if (level.getBlockEntity(depot.below()) instanceof BlazeBurnerBlockEntity burner) {
                     burner.isCreative = true;
                 }
-                set(level, port.below(), cable);
+                set(level, port.south(), cable);
             }
             set(level, depot, block(onBasin ? "create:basin" : "create:depot").defaultBlockState());
             set(level, port, Registration.ASSEMBLY_PORT.get().defaultBlockState().setValue(AssemblyPortBlock.FACING, Direction.NORTH));

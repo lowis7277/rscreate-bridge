@@ -74,5 +74,6 @@
   "rscreatebridge.assembly.problem.missing_kit": "Missing ingredients in the network to redo a mix; checking again shortly",
   "rscreatebridge.assembly.info.basin_ports": "Basins: %s with mixer, %s with press",
   "rscreatebridge.assembly.confirm_abort": "Abort %s job(s)? Shift + right-click again within 3 seconds to confirm",
-  "rscreatebridge.assembly.nothing_to_abort": "There are no jobs to abort"
+  "rscreatebridge.assembly.nothing_to_abort": "There are no jobs to abort",
+  "rscreatebridge.port.problem.no_cable": "Network: not connected (the RS cable goes on the back of the port, opposite the depot or basin)"
 }

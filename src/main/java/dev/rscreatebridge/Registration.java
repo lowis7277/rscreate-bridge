@@ -45,7 +45,7 @@ public final class Registration {
         BLOCKS.register("assembly_controller", () -> new AssemblyControllerBlock(machineProperties()));
 
     public static final DeferredBlock<AssemblyPortBlock> ASSEMBLY_PORT =
-        BLOCKS.register("assembly_port", () -> new AssemblyPortBlock(machineProperties()));
+        BLOCKS.register("assembly_port", () -> new AssemblyPortBlock(machineProperties().noOcclusion()));
 
     public static final DeferredItem<BlockItem> ASSEMBLY_PORT_ITEM =
         ITEMS.registerSimpleBlockItem("assembly_port", ASSEMBLY_PORT);

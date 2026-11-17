@@ -22,6 +22,8 @@ HOLE = (14, 15, 18)
 CYAN = (66, 214, 230)
 CYAN_LIGHT = (170, 246, 255)
 CYAN_DARK = (28, 120, 136)
+CABLE = (78, 82, 90)
+CABLE_DARK = (46, 49, 55)
 GREEN = (96, 230, 110)
 AMBER = (250, 190, 70)
 DIM = (60, 66, 76)
@@ -93,48 +95,49 @@ def gear(im, cx, cy, c, hole):
 
 
 # --------------------------------------------------------------------------- Assembly Port (andesite)
-def port_front():
-    """Front (faces the depot): dark opening with cyan lights on the sides."""
-    im = frame(ANDESITE)
-    panel(im, 3, 3, 12, 12, ANDESITE)
-    rect(im, 5, 6, 10, 9, HOLE)
-    for y in (6, 7, 8, 9):
-        px(im, 4, y, CYAN if y in (7, 8) else CYAN_DARK)
-        px(im, 11, y, CYAN if y in (7, 8) else CYAN_DARK)
-    for x in range(5, 11):
-        px(im, x, 10, CYAN_DARK)
+# The port is shaped like an RS importer/exporter: a head facing the Create station (front), a neck and an RS
+# cable stub on the back. The head's front face uses the 12x12 area at 2..13 of the head texture.
+def port_head():
+    """Head front: andesite frame with rivets around a dark opening lit in cyan."""
+    im = new()
+    rect(im, 0, 0, 15, 15, ANDESITE['base'])
+    for i in range(2, 14):
+        px(im, i, 2, ANDESITE['light']); px(im, 2, i, ANDESITE['light'])
+        px(im, i, 13, ANDESITE['darker']); px(im, 13, i, ANDESITE['darker'])
+    for (x, y) in ((3, 3), (12, 3), (3, 12), (12, 12)):
+        px(im, x, y, ANDESITE['light'])
+    rect(im, 5, 5, 10, 10, PANEL_DARK)
+    rect(im, 6, 6, 9, 9, HOLE)
+    for i in range(6, 10):
+        px(im, 5, i, CYAN if i in (7, 8) else CYAN_DARK)
+        px(im, 10, i, CYAN if i in (7, 8) else CYAN_DARK)
     px(im, 7, 4, CYAN_LIGHT); px(im, 8, 4, CYAN_LIGHT)
     return im
 
 
-def port_side():
-    """Side: cyan cable conduit across the block."""
-    im = frame(ANDESITE)
-    rect(im, 2, 6, 13, 9, ANDESITE['darker'])
-    rect(im, 2, 7, 13, 8, CYAN)
-    for x in range(2, 14, 3):
-        px(im, x, 7, CYAN_LIGHT)
+def port_body():
+    """Neck and head sides: plain andesite casing with a darker edge."""
+    im = new()
+    rect(im, 0, 0, 15, 15, ANDESITE['base'])
+    for i in range(0, 16, 3):
+        px(im, (i * 7) % 16, (i * 5 + 3) % 16, ANDESITE['light'])
+        px(im, (i * 11 + 4) % 16, (i * 3 + 9) % 16, ANDESITE['dark'])
+    for i in range(16):
+        px(im, i, 0, ANDESITE['dark']); px(im, 0, i, ANDESITE['dark'])
+        px(im, i, 15, ANDESITE['darker']); px(im, 15, i, ANDESITE['darker'])
     return im
 
 
-def port_back():
-    """Back: round network connector."""
-    im = frame(ANDESITE)
-    panel(im, 4, 4, 11, 11, ANDESITE)
-    for (x, y) in ((6, 5), (7, 5), (8, 5), (9, 5), (5, 6), (10, 6), (5, 7), (10, 7), (5, 8), (10, 8), (5, 9), (10, 9),
-                   (6, 10), (7, 10), (8, 10), (9, 10)):
-        px(im, x, y, CYAN_DARK)
+def port_cable():
+    """RS-style cable: a dark band (rows 6..9) with a cyan core line along it; the end cap uses 6..9 x 6..9."""
+    im = new()
+    rect(im, 0, 0, 15, 15, CABLE)
+    rect(im, 0, 6, 15, 9, CABLE)
+    for x in range(16):
+        px(im, x, 6, CABLE_DARK); px(im, x, 9, CABLE_DARK)
+        px(im, x, 7, CYAN if x % 4 else CYAN_LIGHT); px(im, x, 8, CYAN_DARK)
+    rect(im, 6, 6, 9, 9, CABLE_DARK)
     rect(im, 7, 7, 8, 8, CYAN)
-    return im
-
-
-def port_top():
-    """Top and bottom: grate."""
-    im = frame(ANDESITE)
-    panel(im, 3, 3, 12, 12, ANDESITE)
-    for y in (5, 7, 9, 11):
-        for x in range(4, 12):
-            px(im, x, y, HOLE)
     return im
 
 
@@ -192,10 +195,9 @@ def crafter_top():
 
 
 TEXTURES = {
-    'assembly_port_front': port_front,
-    'assembly_port_side': port_side,
-    'assembly_port_back': port_back,
-    'assembly_port_top': port_top,
+    'assembly_port_head': port_head,
+    'assembly_port_body': port_body,
+    'assembly_port_cable': port_cable,
     'assembly_controller_front': controller_front,
     'assembly_controller_side': controller_side,
     'assembly_controller_top': controller_top,
@@ -204,44 +206,69 @@ TEXTURES = {
 }
 
 
+def iso_boxes(canvas, boxes, made, ox, oy, s):
+    """Isometric view of axis-aligned boxes (model pixels), seen from +x +y +z: draws up, east and south faces.
+    Each box is (from, to, {face: (texture name, (u1, v1, u2, v2))})."""
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(canvas)
+
+    def screen(x, y, z):
+        return (ox + (x - z) * s, oy + (x + z) * s / 2 - y * s)
+
+    shade = {'up': 1.0, 'south': 0.82, 'east': 0.64}
+    for (f, t, faces) in sorted(boxes, key=lambda b: (b[0][0] + b[1][0]) + (b[0][2] + b[1][2]) + (b[0][1] + b[1][1])):
+        for face in ('south', 'east', 'up'):
+            if face not in faces:
+                continue
+            tex, (u1, v1, u2, v2) = faces[face]
+            img = made[tex]
+            if face == 'up':
+                w, h = t[0] - f[0], t[2] - f[2]
+                def point(a, b): return screen(f[0] + a, t[1], f[2] + b)
+            elif face == 'south':
+                w, h = t[0] - f[0], t[1] - f[1]
+                def point(a, b): return screen(f[0] + a, t[1] - b, t[2])
+            else:
+                w, h = t[2] - f[2], t[1] - f[1]
+                def point(a, b): return screen(t[0], t[1] - b, t[2] - a)
+            for i in range(w):
+                for j in range(h):
+                    u = int(u1 + (u2 - u1) * (i + 0.5) / w)
+                    v = int(v1 + (v2 - v1) * (j + 0.5) / h)
+                    c = img.getpixel((min(u, 15), min(v, 15)))
+                    k = shade[face]
+                    col = (int(c[0] * k), int(c[1] * k), int(c[2] * k), 255)
+                    draw.polygon([point(i, j), point(i + 1, j), point(i + 1, j + 1), point(i, j + 1)], fill=col)
+
+
 def preview(path, made):
-    """Isometric view of the 3 blocks (top, front on the left, side on the right)."""
+    """Preview: the Assembly Port with its real model (head towards the viewer, cable going back), next to the
+    Controller and the Crafter Interface as cubes."""
     s = 8
-    w = 16 * s
-    canvas = Image.new('RGBA', (3 * (2 * w + 40) + 40, 2 * w + 120), (54, 57, 63, 255))
+    canvas = Image.new('RGBA', (3 * 300 + 40, 330), (54, 57, 63, 255))
+    # Port model turned 180 degrees so the head (model north) faces the viewer (south).
+    def turn(f, t):
+        return ((16 - t[0], f[1], 16 - t[2]), (16 - f[0], t[1], 16 - f[2]))
+    port = [
+        ((2, 2, 0), (14, 14, 3), {'south': ('assembly_port_head', (2, 2, 14, 14)),
+                                 'east': ('assembly_port_body', (0, 2, 3, 14)),
+                                 'up': ('assembly_port_body', (2, 0, 14, 3))}),
+        ((4, 4, 3), (12, 12, 7), {'east': ('assembly_port_body', (3, 4, 7, 12)),
+                                 'up': ('assembly_port_body', (4, 3, 12, 7))}),
+        ((6, 6, 7), (10, 10, 16), {'east': ('assembly_port_cable', (7, 6, 16, 10)),
+                                  'up': ('assembly_port_cable', (7, 6, 16, 10))}),
+    ]
+    boxes = []
+    for f, t, faces in port:
+        nf, nt = turn(f, t)
+        boxes.append((nf, nt, faces))
+    iso_boxes(canvas, boxes, made, 160, 200, s)
 
-    def iso(top, left, right, ox, oy):
-        def big(im):
-            return im.resize((w, w), Image.NEAREST)
-        t, l, r = big(top), big(left), big(right)
-        # top face: diamond, mapped pixel by pixel
-        top_img = Image.new('RGBA', (2 * w, w), (0, 0, 0, 0))
-        for y in range(w):
-            for x in range(2 * w):
-                u = (x / (2 * w)) - (y / w) + 0.5
-                v = (x / (2 * w)) + (y / w) - 0.5
-                if 0 <= u < 1 and 0 <= v < 1:
-                    top_img.putpixel((x, y), t.getpixel((int(u * w), int(v * w))))
-        canvas.alpha_composite(top_img, (ox, oy))
-
-        def side(img, shade, flip):
-            out = Image.new('RGBA', (w, int(1.5 * w)), (0, 0, 0, 0))
-            for y in range(out.size[1]):
-                for x in range(w):
-                    sy = y - (x / 2 if flip else (w - x) / 2)
-                    if 0 <= sy < w:
-                        c = img.getpixel((x, int(sy)))
-                        out.putpixel((x, y), (int(c[0] * shade), int(c[1] * shade), int(c[2] * shade), 255))
-            return out
-        canvas.alpha_composite(side(l, 0.82, True), (ox, oy + w // 2))
-        canvas.alpha_composite(side(r, 0.64, False), (ox + w, oy + w // 2))
-
-    x = 30
-    iso(made['assembly_port_top'], made['assembly_port_front'], made['assembly_port_side'], x, 30)
-    x += 2 * w + 40
-    iso(made['assembly_controller_top'], made['assembly_controller_front'], made['assembly_controller_side'], x, 30)
-    x += 2 * w + 40
-    iso(made['crafter_interface_top'], made['crafter_interface_side'], made['crafter_interface_side'], x, 30)
+    def cube(top, front, side, ox):
+        iso_boxes(canvas, [((0, 0, 0), (16, 16, 16), {'up': (top, (0, 0, 16, 16)), 'south': (front, (0, 0, 16, 16)),
+                                                        'east': (side, (0, 0, 16, 16))})], made, ox, 200, s)
+    cube('assembly_controller_top', 'assembly_controller_front', 'assembly_controller_side', 460)
+    cube('crafter_interface_top', 'crafter_interface_side', 'crafter_interface_side', 760)
     canvas.save(path)
 
 

@@ -1,12 +1,48 @@
 {
-  "parent": "minecraft:block/cube",
+  "parent": "minecraft:block/block",
   "textures": {
-    "particle": "rscreatebridge:block/assembly_port_side",
-    "north": "rscreatebridge:block/assembly_port_front",
-    "south": "rscreatebridge:block/assembly_port_back",
-    "east": "rscreatebridge:block/assembly_port_side",
-    "west": "rscreatebridge:block/assembly_port_side",
-    "up": "rscreatebridge:block/assembly_port_top",
-    "down": "rscreatebridge:block/assembly_port_top"
-  }
+    "particle": "rscreatebridge:block/assembly_port_body",
+    "head": "rscreatebridge:block/assembly_port_head",
+    "body": "rscreatebridge:block/assembly_port_body",
+    "cable": "rscreatebridge:block/assembly_port_cable"
+  },
+  "elements": [
+    {
+      "name": "head",
+      "from": [2, 2, 0],
+      "to": [14, 14, 3],
+      "faces": {
+        "north": { "uv": [2, 2, 14, 14], "texture": "#head" },
+        "south": { "uv": [2, 2, 14, 14], "texture": "#body" },
+        "east": { "uv": [0, 2, 3, 14], "texture": "#body" },
+        "west": { "uv": [13, 2, 16, 14], "texture": "#body" },
+        "up": { "uv": [2, 0, 14, 3], "texture": "#body" },
+        "down": { "uv": [2, 13, 14, 16], "texture": "#body" }
+      }
+    },
+    {
+      "name": "neck",
+      "from": [4, 4, 3],
+      "to": [12, 12, 7],
+      "faces": {
+        "east": { "uv": [3, 4, 7, 12], "texture": "#body" },
+        "west": { "uv": [9, 4, 13, 12], "texture": "#body" },
+        "up": { "uv": [4, 3, 12, 7], "texture": "#body" },
+        "down": { "uv": [4, 9, 12, 13], "texture": "#body" },
+        "south": { "uv": [4, 4, 12, 12], "texture": "#body" }
+      }
+    },
+    {
+      "name": "cable",
+      "from": [6, 6, 7],
+      "to": [10, 10, 16],
+      "faces": {
+        "east": { "uv": [7, 6, 16, 10], "texture": "#cable" },
+        "west": { "uv": [0, 6, 9, 10], "texture": "#cable" },
+        "up": { "uv": [7, 6, 16, 10], "texture": "#cable", "rotation": 90 },
+        "down": { "uv": [7, 6, 16, 10], "texture": "#cable", "rotation": 90 },
+        "south": { "uv": [6, 6, 10, 10], "texture": "#cable", "cullface": "south" }
+      }
+    }
+  ]
 }

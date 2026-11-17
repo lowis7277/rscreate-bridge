@@ -218,6 +218,25 @@ public final class AssemblyGameTests {
             .thenSucceed();
     }
 
+    /** Item application recipes (brass casing: brass ingot on a stripped log) are done by the deployer too. */
+    @GameTest(template = "empty", timeoutTicks = 2000)
+    public static void deployerAppliesBrassCasing(final GameTestHelper h) {
+        final StationBuilder.Stations s = stations(h, List.of("deployer"));
+        final Item brass = item("create:brass_ingot");
+        ready(h)
+            .thenExecute(() -> accept(h, List.of(res(Items.STRIPPED_OAK_LOG, 2), res(brass, 2))))
+            .thenWaitUntil(waitFor(h, item("create:brass_casing"), 2))
+            .thenIdle(10)
+            .thenExecute(() -> {
+                assertEquals(2, amount(controller(h), item("create:brass_casing")), "Casings (no duplicates)");
+                assertEquals(0, amount(controller(h), brass), "Leftover brass");
+                assertEquals(0, amount(controller(h), Items.STRIPPED_OAK_LOG), "Leftover logs");
+                assertDepotsEmpty(h, s);
+                assertNoItemEntities(h);
+            })
+            .thenSucceed();
+    }
+
     /**
      * The station ends up in an unloaded chunk with a piece on it: the job pauses (it is not treated as lost
      * nor redone with new materials). Once it loads again, it finishes with the same piece.

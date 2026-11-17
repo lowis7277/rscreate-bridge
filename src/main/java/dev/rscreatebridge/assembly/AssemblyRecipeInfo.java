@@ -355,11 +355,15 @@ public record AssemblyRecipeInfo(ResourceLocation id,
             return cachedSingle;
         }
         final List<AssemblyRecipeInfo> list = new ArrayList<>();
+        // Item application ("right click a block with an item", e.g. brass casing) is also done by deployers.
         for (final RecipeType<?> type : List.of(AllRecipeTypes.PRESSING.getType(), AllRecipeTypes.DEPLOYING.getType(),
-            AllRecipeTypes.FILLING.getType())) {
+            AllRecipeTypes.ITEM_APPLICATION.getType(), AllRecipeTypes.FILLING.getType())) {
             @SuppressWarnings({"unchecked", "rawtypes"})
             final List<RecipeHolder<?>> holders = (List) manager.getAllRecipesFor((RecipeType) type);
             for (final RecipeHolder<?> holder : holders) {
+                if (!AllRecipeTypes.CAN_BE_AUTOMATED.test(holder)) {
+                    continue; // Create's deployer skips these too
+                }
                 if (holder.value() instanceof ProcessingRecipe<?, ?> recipe) {
                     final AssemblyRecipeInfo info = readSingle(holder.id(), recipe);
                     if (info != null) {
@@ -385,7 +389,8 @@ public record AssemblyRecipeInfo(ResourceLocation id,
         }
         final RecipeType<?> type = recipe.getType();
         final Step step;
-        if (type == AllRecipeTypes.DEPLOYING.getType() && recipe instanceof ItemApplicationRecipe deploying) {
+        if ((type == AllRecipeTypes.DEPLOYING.getType() || type == AllRecipeTypes.ITEM_APPLICATION.getType())
+            && recipe instanceof ItemApplicationRecipe deploying) {
             step = new Step(MachineType.DEPLOYING, deploying.getRequiredHeldItem(), deploying.shouldKeepHeldItem(), null);
         } else if (type == AllRecipeTypes.PRESSING.getType()) {
             step = new Step(MachineType.PRESSING, null, false, null);

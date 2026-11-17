@@ -4,6 +4,7 @@ import com.refinedmods.refinedstorage.api.core.Action;
 import com.refinedmods.refinedstorage.api.network.Network;
 import com.refinedmods.refinedstorage.api.network.energy.EnergyNetworkComponent;
 import com.refinedmods.refinedstorage.api.network.impl.node.SimpleNetworkNode;
+import com.refinedmods.refinedstorage.api.network.node.GraphNetworkComponent;
 import com.refinedmods.refinedstorage.api.network.storage.StorageNetworkComponent;
 import com.refinedmods.refinedstorage.api.resource.ResourceKey;
 import com.refinedmods.refinedstorage.api.storage.Actor;
@@ -396,14 +397,25 @@ public abstract class BridgeNodeBlockEntity extends AbstractNetworkNodeContainer
 
     private static final int NEARBY_RADIUS = 32;
 
+    /**
+     * The network line shown on right click and with Goggles. It tells apart the usual problems: no RS Controller
+     * on the network (often a cable that doesn't reach the main network), or a Controller without enough energy.
+     */
     public Component describeNetwork() {
-        if (mainNetworkNode.getNetwork() == null) {
+        final Network network = mainNetworkNode.getNetwork();
+        if (network == null) {
             return Component.translatable("rscreatebridge.network.disconnected").withStyle(ChatFormatting.RED);
         }
-        if (!mainNetworkNode.isActive()) {
-            return Component.translatable("rscreatebridge.network.inactive").withStyle(ChatFormatting.RED);
+        final int devices = network.getComponent(GraphNetworkComponent.class).getContainers().size();
+        if (mainNetworkNode.isActive()) {
+            return Component.translatable("rscreatebridge.network.ok_devices", devices).withStyle(ChatFormatting.GREEN);
         }
-        return Component.translatable("rscreatebridge.network.ok").withStyle(ChatFormatting.GREEN);
+        final EnergyNetworkComponent energy = network.getComponent(EnergyNetworkComponent.class);
+        if (energy.getCapacity() <= 0) {
+            return Component.translatable("rscreatebridge.network.no_controller", devices).withStyle(ChatFormatting.RED);
+        }
+        return Component.translatable("rscreatebridge.network.low_energy", energy.getStored(), energy.getCapacity())
+            .withStyle(ChatFormatting.RED);
     }
 
     // ---------------------------------------------------------------- NBT

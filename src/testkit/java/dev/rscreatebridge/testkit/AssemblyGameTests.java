@@ -410,6 +410,56 @@ public final class AssemblyGameTests {
     }
 
     /**
+     * A regular RS Controller (not the creative one) charged with FE, joined by colored cable: the Assembly
+     * Controller has to see an active network, like any RS device on that network.
+     */
+    @GameTest(template = "empty", timeoutTicks = 400)
+    public static void regularControllerWithEnergyPowersTheNetwork(final GameTestHelper h) {
+        final BlockPos rsController = new BlockPos(1, 1, 2);
+        final BlockPos controller = new BlockPos(4, 1, 2);
+        h.setBlock(rsController, block("refinedstorage:controller"));
+        h.setBlock(new BlockPos(2, 1, 2), block("refinedstorage:black_cable"));
+        h.setBlock(new BlockPos(3, 1, 2), block("refinedstorage:black_cable"));
+        h.setBlock(controller, dev.rscreatebridge.Registration.ASSEMBLY_CONTROLLER.get());
+        h.startSequence()
+            .thenExecute(() -> {
+                final var energy = h.getLevel().getCapability(net.neoforged.neoforge.capabilities.Capabilities.EnergyStorage.BLOCK,
+                    h.absolutePos(rsController), Direction.UP);
+                h.assertTrue(energy != null, "The RS controller has no energy capability");
+                h.assertTrue(energy.receiveEnergy(1_000_000, false) > 0, "The RS controller did not take energy");
+            })
+            .thenIdle(60)
+            .thenExecute(() -> {
+                final AssemblyControllerBlockEntity be = h.getBlockEntity(controller);
+                final var network = be.getNetwork();
+                final String energy = network == null ? "no network" : String.valueOf(network.getComponent(
+                    com.refinedmods.refinedstorage.api.network.energy.EnergyNetworkComponent.class).getStored());
+                h.assertTrue(be.isNetworkActive(), "Assembly controller inactive; network energy stored: " + energy
+                    + "; status: " + be.describeNetwork().getString());
+            })
+            .thenSucceed();
+    }
+
+    /**
+     * Blocks linked to each other but not to a network with an RS Controller say so (instead of "no energy"),
+     * with how many devices they reach.
+     */
+    @GameTest(template = "empty", timeoutTicks = 200)
+    public static void networkWithoutRsControllerIsExplained(final GameTestHelper h) {
+        final BlockPos controller = new BlockPos(2, 1, 2);
+        h.setBlock(controller, dev.rscreatebridge.Registration.ASSEMBLY_CONTROLLER.get());
+        h.setBlock(new BlockPos(3, 1, 2), block("refinedstorage:cable"));
+        h.startSequence()
+            .thenIdle(40)
+            .thenExecute(() -> {
+                final String line = ((AssemblyControllerBlockEntity) h.getBlockEntity(controller)).describeNetwork().getString();
+                h.assertTrue(line.contains("no RS Controller") && line.contains("2"),
+                    "The network line should say there is no RS Controller and count 2 devices: " + line);
+            })
+            .thenSucceed();
+    }
+
+    /**
      * Like an RS importer or exporter, a port only connects to the network through its back: a cable on a side
      * does nothing, and turning the port with a wrench moves the connection.
      */

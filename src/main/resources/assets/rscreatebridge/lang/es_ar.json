@@ -75,5 +75,8 @@
   "rscreatebridge.assembly.info.basin_ports": "Basins: %s con mezcladora, %s con prensa",
   "rscreatebridge.assembly.confirm_abort": "¿Abortar %s trabajo(s)? Hacé shift + click derecho otra vez en 3 segundos para confirmar",
   "rscreatebridge.assembly.nothing_to_abort": "No hay trabajos para abortar",
-  "rscreatebridge.port.problem.no_cable": "Red: sin conectar (el cable de RS va atrás del puerto, del lado opuesto al depot o basin)"
+  "rscreatebridge.port.problem.no_cable": "Red: sin conectar (el cable de RS va atrás del puerto, del lado opuesto al depot o basin)",
+  "rscreatebridge.network.ok_devices": "Red: conectada (%s dispositivos)",
+  "rscreatebridge.network.no_controller": "Red: sin Controller de RS (solo %s dispositivos conectados entre sí: el cable no llega a tu red principal)",
+  "rscreatebridge.network.low_energy": "Red: sin energía suficiente (%s de %s FE)"
 }

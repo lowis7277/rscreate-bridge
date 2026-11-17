@@ -3,13 +3,16 @@ package dev.rscreatebridge;
 import com.refinedmods.refinedstorage.common.api.RefinedStorageApi;
 import com.refinedmods.refinedstorage.neoforge.api.RefinedStorageNeoForgeApi;
 
+import dev.rscreatebridge.compat.ponder.BridgePonderPlugin;
 import dev.rscreatebridge.sink.BridgeSinkFactory;
 
+import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 import org.slf4j.Logger;
@@ -25,6 +28,9 @@ public final class RSCreateBridge {
         container.registerConfig(ModConfig.Type.SERVER, Config.SPEC);
         modBus.addListener(this::commonSetup);
         modBus.addListener(this::registerCapabilities);
+        if (FMLEnvironment.dist == Dist.CLIENT) {
+            modBus.addListener(BridgePonderPlugin::clientSetup);
+        }
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {

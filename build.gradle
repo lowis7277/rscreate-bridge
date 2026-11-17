@@ -48,6 +48,8 @@ neoForge {
         gameTestServer {
             type = "gameTestServer"
             systemProperty 'neoforge.enabledGameTestNamespaces', 'rscbtestkit'
+            // -PexportPonder=true regenerates the Ponder scene structures (PonderStructureExport).
+            systemProperty 'rscb.exportPonder', project.findProperty('exportPonder') ?: 'false'
         }
         configureEach {
             logLevel = org.slf4j.event.Level.INFO

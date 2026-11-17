@@ -52,6 +52,10 @@ Cable Tiers autocrafters.
 Supported sequenced assembly steps: deployer, press and spout. A recipe with any other step (a saw, for example) is
 rejected.
 
+### Ponder
+Hold **W** over the Crafter Interface, the Assembly Controller or the Assembly Port to see an animated guide of how
+to set them up (Create's Ponder).
+
 ### Status and controls
 - **Create Goggles** or **right click** with an empty hand: network, ports, pieces in progress and status. Chat is only
   used when a request is given up (out of retries).
@@ -127,6 +131,8 @@ Block textures are generated with `python tools/make_textures.py .` (requires Pi
   also run on every push through GitHub Actions.
 - `./gradlew runClient` starts a development client with the test mod; `/function rscbtest:demo` builds a demo
   setup with every block and machine.
+- `./gradlew runGameTestServer -PexportPonder=true` regenerates the Ponder scene structures
+  (`assets/rscreatebridge/ponder/`) from `PonderStructureExport`.
 - `./gradlew testkitJar` builds the test mod as a separate jar, for a test instance. It is never needed to play.
 - Optional: put the Cable Tiers jar in `libs/` and add it as `localRuntime` in a `local.gradle` file to also run
   the Cable Tiers compatibility tests (they pass right away when it isn't present).
